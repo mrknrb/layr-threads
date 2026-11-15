@@ -404,5 +404,9 @@ render();
 void loadModels().then(() => document.dispatchEvent(new Event("claude-models")));
 void loadUsage(false);
 if (layr.info?.params?.new) openForm();
+// "New Claude thread" while this (single) panel is open: it is opened again with {new: true}.
+layr.panel.onParams((params) => {
+  if (params?.new && $("new-form").hidden) openForm();
+});
 setInterval(render, 30_000);
 setInterval(() => loadUsage(false), 5 * 60_000);
