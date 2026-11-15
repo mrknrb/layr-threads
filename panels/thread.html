@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude thread</title>
+  <link rel="stylesheet" href="/_layr/layr.css">
+  <link rel="stylesheet" href="claude.css">
+  <link rel="stylesheet" href="thread.css">
+  <script src="/_layr/layr.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header id="head">
+      <div class="head-main">
+        <span id="status-dot" class="dot"></span>
+        <h1 id="title" title="Click to rename">Loading…</h1>
+        <span id="status-label" class="muted"></span>
+      </div>
+      <div class="head-meta">
+        <span id="workspace" class="badge mono"></span>
+        <span id="cost" class="muted"></span>
+      </div>
+    </header>
+    <main id="scroller">
+      <div id="log">
+        <div class="empty" id="loading">Loading the conversation…</div>
+      </div>
+      <div id="working" hidden><span class="spinner"></span><span id="working-text">Working…</span></div>
+    </main>
+    <section id="dock">
+      <div id="todos" hidden></div>
+      <div id="queue" hidden></div>
+      <div id="composer">
+        <div id="attachments" hidden></div>
+        <textarea id="input" rows="1" placeholder="Message Claude…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <div id="bar">
+          <button class="btn ghost small icon-only" id="attach" title="Attach an image"></button>
+          <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+          <select class="select compact" id="model" title="Model"></select>
+          <select class="select compact" id="effort" title="Effort (how hard Claude thinks)"></select>
+          <select class="select compact" id="mode" title="Permission mode"></select>
+          <span class="grow"></span>
+          <span id="hint" class="muted"></span>
+          <button class="btn small danger" id="stop" hidden>Stop</button>
+          <button class="btn small" id="steer" hidden title="Put this message into the running turn now (Ctrl+Enter)">Steer now</button>
+          <button class="btn small primary" id="send">Send</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div id="lightbox" hidden></div>
+  <script type="module" src="thread.js"></script>
+</body>
+</html>

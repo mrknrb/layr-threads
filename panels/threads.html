@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude threads</title>
+  <link rel="stylesheet" href="/_layr/layr.css">
+  <link rel="stylesheet" href="claude.css">
+  <link rel="stylesheet" href="threads.css">
+  <script src="/_layr/layr.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header id="top">
+      <div class="search">
+        <span id="search-icon"></span>
+        <input id="search" class="input" placeholder="Search threads" autocomplete="off">
+      </div>
+      <button class="btn primary small" id="new" title="New thread (Ctrl+N)"></button>
+    </header>
+    <section id="new-form" hidden></section>
+    <main id="list"><div class="empty">Loading…</div></main>
+    <footer id="foot">
+      <div id="usage"></div>
+      <div class="foot-actions">
+        <button class="btn ghost small icon-only" id="add-project" title="Add a project folder"></button>
+        <button class="btn ghost small icon-only" id="show-archived" title="Show archived threads"></button>
+      </div>
+    </footer>
+  </div>
+  <script type="module" src="threads.js"></script>
+</body>
+</html>
