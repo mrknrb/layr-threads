@@ -90,6 +90,9 @@ ${read}
   package). Its tools are called from panels with \`layr.tools.call(name, args)\`. Add "pc" to permissions and needs.
   Only add a backend when the plugin really needs one.
 
+The folder is a git repository: layr saves your changes as a version by itself after each turn (the person sees
+them in My plugins > History and can undo any of them), so don't commit yourself.
+
 ## When you are done
 1. Check that layr.json is valid JSON and every file it names exists.
 2. Link the plugin into layr so it appears at once: call the tool \`mcp__layr__layr__packages_link\` with

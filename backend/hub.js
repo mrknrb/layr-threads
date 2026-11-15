@@ -10,7 +10,8 @@ export class Hub {
     this.token = token;
     this.client = null;
     this.connecting = null;
-    this.agentToken = null;
+    /** Thread id → its agent token (each thread asks for its own, labelled with its id). */
+    this.agentTokens = new Map();
     this.warned = false;
   }
 
@@ -77,13 +78,18 @@ export class Hub {
     this.call("layr__notify", { text, kind }).catch(() => {});
   }
 
-  /** The token Claude gets for the hub (it lives until the core restarts; the backend restarts with it). */
-  async getAgentToken() {
-    if (this.agentToken) return this.agentToken;
-    const result = await this.call("layr__agent_token", { label: "Claude Code threads" });
+  /**
+   * The token a thread's Claude gets for the hub (it lives until the core restarts; the backend restarts with it).
+   * Its label is the thread's id: plugins see it in a tool call's `_meta["layr/caller"].label` (docs/ARCHITECTURE.md
+   * › The MCP hub), so they know which thread called.
+   */
+  async getAgentToken(threadId) {
+    const label = String(threadId || "Claude Code threads");
+    if (this.agentTokens.has(label)) return this.agentTokens.get(label);
+    const result = await this.call("layr__agent_token", { label });
     const token = typeof result === "string" ? result : (result?.token ?? null);
     if (!token) throw new Error("layr__agent_token gave no token");
-    this.agentToken = token;
+    this.agentTokens.set(label, token);
     return token;
   }
 

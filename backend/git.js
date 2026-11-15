@@ -66,10 +66,10 @@ async function branchExists(dir, branch) {
 }
 
 /**
- * Make a worktree on a new branch from the project's current HEAD.
+ * Make a worktree on a new branch from the project's current HEAD (or from `baseRef`).
  * Folder: `<worktreesRoot>/<project>-<slug>`, where worktreesRoot is `<project>/../.layr-worktrees` by default.
  */
-export async function createWorktree({ projectPath, name, branch, worktreesRoot }) {
+export async function createWorktree({ projectPath, name, branch, worktreesRoot, baseRef }) {
   if (!(await isGitRepo(projectPath))) {
     throw new Error(`${projectPath} is not a git repository, so it can't get a worktree. Use the project folder instead.`);
   }
@@ -88,7 +88,10 @@ export async function createWorktree({ projectPath, name, branch, worktreesRoot 
     candidate = `${wanted}-${n}`;
   }
   const folder = folderFor(candidate);
-  const base = (await git(projectPath, ["rev-parse", "HEAD"]).catch(() => "")).trim();
+  // `baseRef`: start from that branch or commit (e.g. the base branch a pipeline lands on) instead of HEAD.
+  const from = baseRef ? `${baseRef}^{commit}` : "HEAD";
+  const base = (await git(projectPath, ["rev-parse", "--verify", from]).catch(() => "")).trim();
+  if (!base && baseRef) throw new Error(`${baseRef} is not a branch or commit of ${projectPath}`);
   if (!base) throw new Error(`${projectPath} has no commits yet, so a worktree can't branch from it.`);
   await git(projectPath, ["worktree", "add", "-b", candidate, folder, base], { timeoutMs: 600_000 });
   return { path: folder, branch: candidate, base };

@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code threads in your projects and worktrees, with approvals, live streaming, and plugins made with AI.",
   "author": "mrknrb",
   "layr": "^0.1",

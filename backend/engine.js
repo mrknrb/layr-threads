@@ -95,6 +95,7 @@ export class Engine {
         projectPath: project.path,
         name: input.branch ? input.branch : title,
         branch: input.branch,
+        baseRef: input.baseRef || undefined,
         worktreesRoot: process.env.LAYR_CLAUDE_WORKTREES || undefined,
       });
       workspace = { kind: "worktree", path: tree.path, branch: tree.branch, base: tree.base, created: true };
@@ -508,7 +509,7 @@ export class Engine {
     const mcpServers = {};
     try {
       if (this.hub.available) {
-        const token = await this.hub.getAgentToken();
+        const token = await this.hub.getAgentToken(meta.id);
         mcpServers.layr = { type: "http", url: this.hub.url, headers: { Authorization: `Bearer ${token}` } };
       }
     } catch (error) {

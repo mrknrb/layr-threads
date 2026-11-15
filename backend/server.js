@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { Account } from "./account.js";
+import { autoCommit, initPluginRepo, lastPrompt } from "./autoCommit.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
 import { Hub } from "./hub.js";
@@ -21,9 +22,30 @@ const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB
 const account = new Account();
 const engine = new Engine({ store, hub, account });
 
-// Plugin-maker threads: link the folder into layr after each turn that ends well.
+// After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
+// plugin-maker threads link their folder into layr.
 engine.onTurnEnded = (meta, status) => {
-  if (meta.kind !== "plugin" || status !== "done") return;
+  if (status !== "done") return;
+  void commitTurn(meta).finally(() => {
+    if (meta.kind === "plugin") linkPluginFolder(meta);
+  });
+};
+
+async function commitTurn(meta) {
+  if (process.env.LAYR_CLAUDE_AUTOCOMMIT === "0" || !meta.cwd) return;
+  try {
+    const prompt = lastPrompt(store.readTranscript(meta.id));
+    const done = await autoCommit(meta.cwd, { prompt, reply: engine.lastReply(meta.id) });
+    if (!done?.commit) return;
+    log(`saved ${done.files} file(s) in ${done.top}: ${done.subject}`);
+    const entry = store.append(meta.id, { type: "system", text: `Saved as a version (My plugins > History): ${done.subject}` });
+    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+  } catch (error) {
+    log(`saving the changes in ${meta.cwd} failed:`, errorMessage(error));
+  }
+}
+
+function linkPluginFolder(meta) {
   linkIfReady(hub, meta.cwd)
     .then((info) => {
       if (!info) return;
@@ -36,7 +58,7 @@ engine.onTurnEnded = (meta, status) => {
       }
     })
     .catch((error) => log(`linking ${meta.cwd} failed:`, errorMessage(error)));
-};
+}
 
 const server = new McpServer({ name: "claude", version: "0.1.0" }, { capabilities: { tools: {} } });
 
@@ -140,6 +162,7 @@ tool(
       .optional()
       .describe('"project" (default): the project folder; "worktree": a new git worktree on a new branch; {worktreePath}: an existing worktree'),
     branch: z.string().optional().describe("Branch name for a new worktree (default layr/<slug of the title>)"),
+    baseRef: z.string().optional().describe("Branch or commit a new worktree starts from (default: the project's HEAD)"),
     permissionMode: permissionMode.optional(),
     title: z.string().optional(),
     images: images.optional(),
@@ -311,6 +334,8 @@ tool(
   },
   async (a) => {
     const { id, folder, root } = newPluginFolder(a);
+    // Its history starts now (a repository with an empty first commit); Claude's turns are saved into it.
+    await initPluginRepo(folder, id).catch((error) => log(`git init in ${folder} failed:`, errorMessage(error)));
     const project = store.addProject({ path: root, name: "My layr plugins" });
     const prompt = `${a.name ? `Name: ${a.name}\n\n` : ""}Please make this layr plugin for me:\n\n${a.description}`;
     const thread = await engine.startThread({
