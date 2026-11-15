@@ -120,6 +120,7 @@ export const PERMISSION_LABEL = {
   acceptEdits: "Accept edits",
   bypassPermissions: "Never ask",
   plan: "Plan only",
+  dontAsk: "Only allowed tools",
 };
 
 export function relTime(iso) {

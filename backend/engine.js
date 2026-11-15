@@ -29,7 +29,14 @@ const TOOL_RESULT_MAX = 20_000;
 const TOOL_INPUT_MAX = 60_000;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-export const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"];
+export const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"];
+
+/** Allow rules a thread starts with (thread_start `allowedTools`): non-empty strings, at most 100. */
+export function allowedToolsOf(list) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list)) throw new Error("allowedTools is a list of tool names");
+  return [...new Set(list.map((t) => String(t ?? "").trim()).filter(Boolean))].slice(0, 100);
+}
 
 const LAYR_INSTRUCTIONS = `
 
@@ -122,7 +129,7 @@ export class Engine {
       sessionId: randomUUID(),
       sessionStarted: false,
       systemAppend: input.systemAppend || null,
-      allowRules: [],
+      allowRules: allowedToolsOf(input.allowedTools),
       queue: [],
       queuePaused: false,
       pendingApprovals: [],
@@ -866,6 +873,11 @@ export class Engine {
     const kind = toolName === "AskUserQuestion" ? "question" : toolName === "ExitPlanMode" ? "plan" : "permission";
     if (kind === "permission" && meta.permissionMode === "bypassPermissions") {
       return Promise.resolve({ behavior: "allow", updatedInput: toolInput, toolUseID: opts?.toolUseID });
+    }
+    // dontAsk (background jobs): nobody answers, so what allowedTools doesn't allow is denied at once.
+    if (meta.permissionMode === "dontAsk") {
+      const message = `Not allowed here: ${toolName} isn't among this thread's allowed tools, and nobody answers.`;
+      return Promise.resolve({ behavior: "deny", message, toolUseID: opts?.toolUseID });
     }
     const requestId = newId("r");
     const inputText = JSON.stringify(toolInput ?? {});

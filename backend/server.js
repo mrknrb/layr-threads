@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { Account } from "./account.js";
+import { ASK_DEFAULT_MODEL, ask } from "./ask.js";
 import { autoCommit, initPluginRepo, lastPrompt } from "./autoCommit.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
@@ -76,7 +77,8 @@ function tool(name, description, shape, handler) {
 }
 
 const permissionMode = z.enum(PERMISSION_MODES).describe(
-  "default: ask before edits and commands; acceptEdits: edit files without asking; bypassPermissions: never ask; plan: plan first, no changes",
+  "default: ask before edits and commands; acceptEdits: edit files without asking; bypassPermissions: never ask; " +
+    "plan: plan first, no changes; dontAsk: never ask, deny what allowedTools doesn't allow (background jobs)",
 );
 const effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
 const images = z
@@ -164,6 +166,11 @@ tool(
     branch: z.string().optional().describe("Branch name for a new worktree (default layr/<slug of the title>)"),
     baseRef: z.string().optional().describe("Branch or commit a new worktree starts from (default: the project's HEAD)"),
     permissionMode: permissionMode.optional(),
+    allowedTools: z
+      .array(z.string())
+      .max(100)
+      .optional()
+      .describe("Tools allowed without asking (Claude Code rules, e.g. Read, mcp__layr__pipeline__propose); with dontAsk the rest are denied"),
     title: z.string().optional(),
     images: images.optional(),
   },
@@ -316,6 +323,19 @@ tool("models_list", "The models Claude Code offers on this PC, with their effort
 
 tool("usage", "The Claude account's plan usage (5-hour and weekly windows) and who is signed in.", { refresh: z.boolean().optional() }, (a) =>
   account.usage({ refresh: a.refresh === true }),
+);
+
+tool(
+  "ask",
+  "One question, one answer: a single Claude turn with no tools, no saved thread and no project files (no CLAUDE.md), " +
+    `for small background jobs (a brief, a summary, a classification). Model ${ASK_DEFAULT_MODEL} unless given. Gives {text}.`,
+  {
+    prompt: z.string().min(1),
+    system: z.string().optional().describe("A system prompt (instead of Claude Code's)"),
+    model: z.string().optional().describe(`opus, sonnet, haiku or an id (default ${ASK_DEFAULT_MODEL})`),
+    effort: effort.optional(),
+  },
+  (a) => ask(a),
 );
 
 // ------------------------------------------------------------------ plugin maker
