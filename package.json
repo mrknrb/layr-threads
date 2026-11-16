@@ -7,8 +7,8 @@
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
-    "test": "node test/autoCommit.test.js && node test/ask.test.js && node test/backend.test.js",
-    "test:offline": "node test/autoCommit.test.js && node test/ask.test.js",
+    "test": "node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js && node test/backend.test.js",
+    "test:offline": "node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js",
     "test:autocommit": "node test/autoCommit.test.js",
     "test:panels": "node test/panels.e2e.js",
     "test:core": "node test/core.e2e.js",

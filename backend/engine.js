@@ -11,6 +11,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
 import { createWorktree, currentBranch, isGitRepo } from "./git.js";
+import { threadSettings } from "./threadSettings.js";
 import {
   AsyncQueue,
   errorMessage,
@@ -557,8 +558,10 @@ export class Engine {
     const effort = meta.effort && (!modelInfo || !modelInfo.efforts.length || modelInfo.efforts.includes(meta.effort))
       ? meta.effort
       : undefined;
+    const settings = threadSettings();
     const options = {
       cwd: meta.cwd,
+      ...(settings ? { settings } : {}),
       ...(meta.model ? { model: meta.model } : {}),
       ...(effort ? { effort } : {}),
       ...(meta.thinking === false
