@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Claude Code threads in your projects and worktrees, with approvals, live streaming, and plugins made with AI.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -31,5 +31,25 @@
     "runtime": "node",
     "entry": "backend/server.js",
     "keepAlive": true
+  },
+  "access": {
+    "groups": [
+      { "id": "read", "label": "See projects, threads' status, models and usage",
+        "tools": ["projects_list", "worktrees_list", "thread_list", "thread_status", "thread_wait", "approvals_list",
+                  "models_list", "usage", "plugins_folder"],
+        "defaults": { "plugins": "allow" } },
+      { "id": "conversations", "label": "Read what threads say",
+        "tools": ["thread_read", "thread_transcript", "attachment_read"],
+        "defaults": { "plugin:pipeline": "allow" } },
+      { "id": "ask", "label": "Ask Claude one-off questions (uses your plan)", "tools": ["ask"],
+        "defaults": { "plugin:pipeline": "allow", "plugin:concepts": "allow" } },
+      { "id": "run", "label": "Start, steer and stop threads; change projects",
+        "tools": ["thread_start", "thread_send", "thread_interrupt", "thread_archive", "thread_queue", "project_add",
+                  "project_update", "project_remove", "plugin_make"],
+        "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow" } },
+      { "id": "approve", "label": "Answer threads' permission requests and change their permissions",
+        "tools": ["answer_approval", "thread_update"],
+        "defaults": { "plugin:pipeline": "allow" } }
+    ]
   }
 }
