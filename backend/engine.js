@@ -294,6 +294,10 @@ export class Engine {
     }
     if (!Object.keys(changes).length) return this.summary(meta);
     this.store.updateThread(id, changes);
+    // Renamed: the shell's questions about its tool calls say the new title.
+    if (changes.title && this.hub.agentTokens?.has(id)) {
+      this.hub.getAgentToken(id, changes.title).catch((error) => log(`renaming ${id}'s agent:`, errorMessage(error)));
+    }
     const said = Object.entries(changes)
       .filter(([k]) => k !== "title")
       .map(([k, v]) => `${k}: ${v ?? "default"}`)
@@ -516,7 +520,7 @@ export class Engine {
     const mcpServers = {};
     try {
       if (this.hub.available) {
-        const token = await this.hub.getAgentToken(meta.id);
+        const token = await this.hub.getAgentToken(meta.id, meta.title);
         mcpServers.layr = { type: "http", url: this.hub.url, headers: { Authorization: `Bearer ${token}` } };
       }
     } catch (error) {

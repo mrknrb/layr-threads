@@ -53,7 +53,7 @@ export async function startFakeHub({ port = 0, pluginToken = "plugin-token" } = 
     }));
     t("layr__plugins_list", {}, () => ({ plugins: [{ id: "claude", name: "Claude Code" }, { id: "demo", name: "Demo" }] }));
     if (who === "plugin") {
-      t("layr__agent_token", { label: z.string().optional() }, () => {
+      t("layr__agent_token", { label: z.string().optional(), title: z.string().optional() }, () => {
         const token = `agent-${randomUUID()}`;
         agentTokens.add(token);
         return { token };

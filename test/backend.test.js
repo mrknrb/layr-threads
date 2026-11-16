@@ -117,8 +117,12 @@ try {
   check(tr.entries.at(-1).type === "turn_end" && typeof tr.entries.at(-1).costUsd === "number", "turn_end has cost", tr.entries.at(-1).costUsd);
   check((topicsSeen.get("claude:thread.<id>:delta") ?? 0) > 0, "text deltas streamed as events", topicsSeen.get("claude:thread.<id>:delta"));
   check(existsSync(path.join(dataDir, "threads", `${thread.id}.jsonl`)), "transcript file on disk");
-  const labels = hub.calls.filter((c) => c.name === "layr__agent_token").map((c) => c.args.label);
+  const tokenCalls = hub.calls.filter((c) => c.name === "layr__agent_token");
+  const labels = tokenCalls.map((c) => c.args.label);
   check(labels.includes(thread.id), "the thread's agent token is labelled with its id", labels);
+  const titled = tokenCalls.find((c) => c.args.label === thread.id);
+  const title = titled?.args.title;
+  check(typeof title === "string" && title.length > 0, "and titled with its title", titled?.args);
 
   step("queue while a turn runs");
   const s1 = await call("thread_send", { thread: thread.id, text: "Reply with just the word one." });
