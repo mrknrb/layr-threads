@@ -36,12 +36,13 @@ server.stderr.on("data", (d) => process.env.LAYR_TEST_VERBOSE && process.stderr.
 await new Promise((resolve) => server.stdout.on("data", (d) => String(d).includes("dev server") && resolve()));
 const base = `http://127.0.0.1:${port}`;
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const errors = [];
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  page.on("console", (m) => m.type() === "error" && !/Failed to load resource/.test(m.text()) && errors.push(m.text()));
+  page.on("response", (r) => r.status() === 404 && !/favicon/.test(r.url()) && errors.push(`404 ${r.url()}`));
   await page.goto(`${base}/`);
   const threads = page.frameLocator("#left iframe");
 
@@ -64,7 +65,7 @@ try {
   await page.screenshot({ path: path.join(out, "03-approval.png") });
   check(true, "approval card shown");
   await thread.getByRole("button", { name: "Allow", exact: true }).click();
-  await thread.locator(".turn-end").first().waitFor({ timeout: 180_000 });
+  await thread.locator(".turn[data-ended]").first().waitFor({ timeout: 180_000 });
   await page.waitForTimeout(800);
   await page.screenshot({ path: path.join(out, "04-done.png") });
   const hello = path.join(repo, "hello.txt");
@@ -77,7 +78,7 @@ try {
   await thread.locator("#input").press("Enter");
   await thread.locator(".msg-text.live, #working:not([hidden])").first().waitFor({ timeout: 60_000 });
   await page.screenshot({ path: path.join(out, "05-streaming.png") });
-  await thread.locator(".turn-end").nth(1).waitFor({ timeout: 180_000 });
+  await thread.locator(".turn[data-ended]").nth(1).waitFor({ timeout: 180_000 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(out, "06-markdown.png") });
   check((await thread.locator(".msg-text li").count()) >= 3, "markdown list rendered");
@@ -88,7 +89,7 @@ try {
   await thread.locator("#input").fill("What color is this image? One word.");
   await page.screenshot({ path: path.join(out, "06b-attachment.png") });
   await thread.locator("#input").press("Enter");
-  await thread.locator(".turn-end").nth(2).waitFor({ timeout: 180_000 });
+  await thread.locator(".turn[data-ended]").nth(2).waitFor({ timeout: 180_000 });
   check((await thread.locator(".msg-user .imgs img").count()) === 1, "sent image shown in the bubble");
   check(/red/i.test(await thread.locator(".msg-text").last().textContent()), "Claude saw the image");
 
@@ -103,7 +104,7 @@ try {
     await page.screenshot({ path: path.join(out, "06c-question.png") });
     await thread.locator(".question .opt", { hasText: /coffee/i }).first().click();
     await thread.getByRole("button", { name: "Answer" }).click();
-    await thread.locator(".turn-end").nth(3).waitFor({ timeout: 120_000 });
+    await thread.locator(".turn[data-ended]").nth(3).waitFor({ timeout: 120_000 });
     check(/coffee/i.test(await thread.locator(".msg-text").last().textContent()), "question answered from the panel");
   } catch {
     console.log("SKIP question: Claude did not ask");
@@ -114,7 +115,7 @@ try {
   await thread.locator("#input").press("Enter");
   await thread.locator(".msg-text.live").first().waitFor({ timeout: 60_000 });
   await thread.locator("#stop").click();
-  await thread.locator(".turn-end.interrupted").first().waitFor({ timeout: 60_000 });
+  await thread.locator(".turn[data-ended=\"interrupted\"]").first().waitFor({ timeout: 60_000 });
   check(true, "Stop ends the turn as stopped");
   await page.screenshot({ path: path.join(out, "06d-stopped.png") });
 
@@ -122,7 +123,7 @@ try {
   const light = await browser.newPage({ viewport: { width: 1000, height: 900 } });
   await light.goto(`${base}/?theme=light`);
   await light.frameLocator("#left iframe").locator(".row").first().click();
-  await light.frameLocator("#right iframe.on").locator(".turn-end").nth(1).waitFor({ timeout: 20_000 });
+  await light.frameLocator("#right iframe.on").locator(".turn[data-ended]").nth(1).waitFor({ timeout: 20_000 });
   await light.frameLocator("#right iframe.on").locator("#scroller").evaluate((el) => (el.scrollTop = 0));
   await light.waitForTimeout(800);
   await light.screenshot({ path: path.join(out, "07-light.png") });

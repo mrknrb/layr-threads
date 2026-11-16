@@ -37,6 +37,28 @@
     if (j.error) throw new Error(j.error);
     return j.result;
   }
+  /**
+   * Other plugins' tools: none, unless localStorage "mock-layr.pipeline" is "1": then a fake pipeline whose task #42
+   * is the thread t_demo1 (calls are logged in localStorage "mock-layr.pipelineCalls").
+   */
+  async function fakePlugin(plugin, tool, args) {
+    if (plugin !== "pipeline" || localStorage.getItem("mock-layr.pipeline") !== "1") throw new Error(`No plugin ${plugin}`);
+    const calls = JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]");
+    calls.push({ tool, args });
+    localStorage.setItem("mock-layr.pipelineCalls", JSON.stringify(calls));
+    const reply = (v) => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v && typeof v === "object" ? v : { result: v } });
+    if (tool === "thread_task") {
+      if (args.thread !== "t_demo1") return reply(null);
+      return reply({ number: 42, title: "Add sorting to the notes list", column: "stopped", why: "Notes are hard to find in long lists",
+        note: "Waits for your answers", link: "layr://pipeline/task/42",
+        brief: { what: "A sort button: newest first, or A–Z.", asks: "Whether the order is remembered per notebook.", ifWrong: "The list order looks random." },
+        stakes: "low", landing: { state: "waiting", problem: "the base moved on: rebase first" }, planning: false,
+        buttons: [{ id: "land", label: "Land", kind: "primary", confirm: "Land #42 on main?" }, { id: "settle", label: "Settle" },
+          { id: "delete", label: "Delete", kind: "danger", confirm: "Delete #42 and its worktree?" }] });
+    }
+    return reply({ ok: true });
+  }
+
   const toParent = (msg) => {
     if (window.parent !== window) window.parent.postMessage({ ...msg, instance }, "*");
   };
@@ -47,8 +69,9 @@
     instance,
     params,
     state,
-    device: { id: "dev", kind: "pc", name: "Dev PC" },
-    platform: "windows",
+    // localStorage "mock-layr.phone" = "1": shown on a phone.
+    device: localStorage.getItem("mock-layr.phone") === "1" ? { id: "phone", kind: "phone", name: "Phone" } : { id: "dev", kind: "pc", name: "Dev PC" },
+    platform: localStorage.getItem("mock-layr.phone") === "1" ? "android" : "windows",
     theme: { mode: theme, accent: null },
     coreVersion: "dev",
   };
@@ -66,7 +89,8 @@
       list: async () => [],
     },
     tools: {
-      call: (tool, args, opts) => post("/dev/call", { tool, args: args ?? {}, plugin: opts?.plugin }),
+      call: (tool, args, opts) =>
+        opts?.plugin && opts.plugin !== "claude" ? fakePlugin(opts.plugin, tool, args ?? {}) : post("/dev/call", { tool, args: args ?? {}, plugin: opts?.plugin }),
       list: () => post("/dev/tools", {}),
     },
     events: {
@@ -95,6 +119,7 @@
         sessionStorage.setItem(stateKey, JSON.stringify(s));
       },
       close: async () => toParent({ type: "close" }),
+      onParams: () => () => {},
     },
     commands: { run: async () => null, list: async () => [] },
     ui: {

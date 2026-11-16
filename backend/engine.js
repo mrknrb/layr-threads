@@ -56,6 +56,9 @@ export class Engine {
     /** thread id → Set of functions called on every status change (thread_wait) */
     this.watchers = new Map();
     this.deltaBuffers = new Map();
+    /** Folder → the slash commands Claude Code last said it has there. */
+    this.commandsByCwd = new Map();
+    this.notifySetting = null;
     /** The entry appended last (for emitEntry right after an append). */
     this.lastEntry = null;
     const append = store.append.bind(store);
@@ -483,7 +486,8 @@ export class Engine {
       pendingApprovals: [],
     });
     this.touch(meta);
-    if (status === "failed") this.hub.notify(`Claude thread failed: ${meta.title}`, "error");
+    if (status === "done") this.notifyUser(meta, `Claude finished: ${meta.title}`, "success");
+    else if (status === "failed") this.notifyUser(meta, `Claude thread failed: ${meta.title}`, "error");
     for (const pending of live.approvals.values()) pending.resolve({ decision: "deny", message: "The turn ended" });
     live.approvals.clear();
     if (live.needsRestart || live.closed) this.closeLive(meta.id, "after turn");
@@ -727,6 +731,17 @@ export class Engine {
         .supportedModels?.()
         .then((models) => this.account.setModels(models))
         .catch(() => {});
+      // Its slash commands: the names now, then with their descriptions.
+      if (Array.isArray(msg.slash_commands) && !meta.slashCommands?.some((c) => c.description)) {
+        const terminalOnly = new Set(msg.terminal_slash_commands ?? []);
+        this.setCommands(meta, msg.slash_commands.filter((c) => !terminalOnly.has(c)));
+      }
+      void live.query
+        .supportedCommands?.()
+        .then((commands) => this.setCommands(meta, commands))
+        .catch(() => {});
+    } else if (msg.subtype === "commands_changed") {
+      this.setCommands(meta, msg.commands);
     } else if (msg.subtype === "compact_boundary") {
       const m = msg.compact_metadata ?? {};
       this.store.append(meta.id, {
@@ -935,6 +950,8 @@ export class Engine {
       this.store.updateThread(meta.id, { status: "waiting", pendingApprovals: [...(meta.pendingApprovals ?? []), requestId] });
       this.hub.emit("claude:approval", { kind: "request", thread: meta.id, threadTitle: meta.title, projectId: meta.projectId, approval: entry });
       this.emitThread(meta);
+      const asks = { question: "Claude asks you", plan: "Claude has a plan for you", permission: "Claude needs your permission" };
+      this.notifyUser(meta, `${asks[kind]}: ${meta.title}`, "warning");
     });
   }
 
@@ -1015,6 +1032,53 @@ export class Engine {
       ...(priority ? { priority } : {}),
     };
     return { sdk, text: body, images: saved };
+  }
+
+  // ---------------------------------------------------------------- notifications
+
+  /**
+   * A layr notification that a thread finished or waits for the user; not for archived threads, nor for background
+   * ones (permission mode dontAsk: a pipeline's scouts, refiner, orchestrator), nor when the plugin's setting
+   * `notifications` is off.
+   */
+  notifyUser(meta, text, kind) {
+    if (meta.archived || meta.permissionMode === "dontAsk") return;
+    void this.notificationsOn().then((on) => on && this.hub.notify(text, kind));
+  }
+
+  /** The setting `notifications` (default on), asked at most every 15 s. */
+  async notificationsOn() {
+    const now = Date.now();
+    if (this.notifySetting && now - this.notifySetting.at < 15_000) return this.notifySetting.on;
+    let on = true;
+    try {
+      if ((await this.hub.settingsGet("notifications")) === false) on = false;
+    } catch {
+      // a core without plugin settings: on
+    }
+    this.notifySetting = { on, at: now };
+    return on;
+  }
+
+  // ---------------------------------------------------------------- slash commands
+
+  /** Claude Code's slash commands for the thread's folder ([{name, description, argumentHint}]), or null. */
+  commandsFor(meta) {
+    return meta.slashCommands ?? this.commandsByCwd.get(meta.cwd) ?? null;
+  }
+
+  setCommands(meta, commands) {
+    const list = (commands ?? [])
+      .map((c) =>
+        typeof c === "string"
+          ? { name: c, description: "", argumentHint: "" }
+          : { name: String(c?.name ?? ""), description: String(c?.description ?? ""), argumentHint: String(c?.argumentHint ?? "") },
+      )
+      .map((c) => ({ ...c, name: c.name.replace(/^\//, "") }))
+      .filter((c) => c.name);
+    if (!list.length) return;
+    this.store.updateThread(meta.id, { slashCommands: list });
+    this.commandsByCwd.set(meta.cwd, list);
   }
 
   // ---------------------------------------------------------------- events

@@ -35,6 +35,7 @@
 .row .row-acts { position: absolute; right: 6px; top: 5px; display: none; gap: 2px; background: var(--bg-2); border-radius: 6px; }
 .row:hover .row-acts { display: flex; }
 .row:hover .time { visibility: hidden; }
+.row .input.rename { height: 24px; font-size: 13px; padding: 2px 6px; }
 
 /* New thread form */
 #new-form { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-2);

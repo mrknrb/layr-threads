@@ -100,6 +100,13 @@ export class Hub {
     return token;
   }
 
+  /** One of this plugin's settings (layr.json `settings`): the user's value or its default. */
+  async settingsGet(id) {
+    if (!this.available) return undefined;
+    const value = await this.call("layr__settings_get", { id });
+    return value && typeof value === "object" && "result" in value ? value.result : value;
+  }
+
   async linkPackage(dir) {
     return this.call("layr__packages_link", { path: dir });
   }

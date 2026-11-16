@@ -10,12 +10,20 @@ import { z } from "zod";
 import { Account } from "./account.js";
 import { ASK_DEFAULT_MODEL, ask } from "./ask.js";
 import { autoCommit, initPluginRepo, lastPrompt } from "./autoCommit.js";
+import { fileDiff, threadChanges } from "./changes.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
 import { Hub } from "./hub.js";
 import { linkIfReady, newPluginFolder, pluginSystemPrompt, pluginsRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
+import { checkFresh, openFolder, openTerminal } from "./terminal.js";
 import { errorMessage, isDirectory, log, truncate } from "./util.js";
+
+/** Slash commands every Claude Code session has, shown before it has listed its own. */
+const BUILTIN_COMMANDS = [
+  { name: "compact", description: "Summarize the conversation so far, to free up context", argumentHint: "<what to keep>" },
+  { name: "context", description: "Show what fills the context window", argumentHint: "" },
+];
 
 const dataDir = process.env.LAYR_DATA_DIR || path.join(os.homedir(), ".layr-claude-dev");
 const store = new Store(dataDir);
@@ -61,7 +69,7 @@ function linkPluginFolder(meta) {
     .catch((error) => log(`linking ${meta.cwd} failed:`, errorMessage(error)));
 }
 
-const server = new McpServer({ name: "claude", version: "0.1.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.2.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -259,6 +267,74 @@ tool("thread_status", "One thread's state: status, workspace and branch, model, 
   }
   return { thread: summary, approvals, git };
 });
+
+tool(
+  "thread_changes",
+  "What a thread changed where it works, against its base branch: lines added and removed, files (committed, " +
+    "uncommitted, new), the branch's commits, how far the base moved on (behind) and files that would conflict. " +
+    "Gives {changes}, null when its folder isn't a git checkout.",
+  { thread: threadId },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    if (!isDirectory(meta.cwd)) return { changes: null };
+    return { changes: await threadChanges(meta.cwd, { hint: meta.workspace?.base }) };
+  },
+);
+
+tool(
+  "thread_diff",
+  "One file's changes in a thread's folder as a unified diff, from where its branch left the base (or the last " +
+    "commit) to the file on disk. `file`: a path from thread_changes.",
+  { thread: threadId, file: z.string() },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    return { file: a.file, diff: await fileDiff(meta.cwd, a.file, { hint: meta.workspace?.base }) };
+  },
+);
+
+tool(
+  "thread_commands",
+  "Claude Code's slash commands in a thread's folder (send one as the message text, e.g. /compact), as Claude Code " +
+    "last listed them: [{name, description, argumentHint}]; before its first turn only the built-in ones.",
+  { thread: threadId },
+  (a) => {
+    const meta = engine.requireThread(a.thread);
+    const known = engine.commandsFor(meta) ?? [];
+    const names = new Set(known.map((c) => c.name));
+    return { commands: [...known, ...BUILTIN_COMMANDS.filter((c) => !names.has(c.name))], known: known.length > 0 };
+  },
+);
+
+tool(
+  "run_in_terminal",
+  "Open a new terminal window on this PC running a command, in the thread's folder (else the home folder): the ▶ " +
+    "Run of a reply's command block. `at`: when it was clicked (ms); an older click than a minute doesn't run.",
+  {
+    thread: threadId.optional(),
+    shell: z.enum(["powershell", "cmd", "bash"]),
+    command: z.string().min(1).max(100_000),
+    at: z.number(),
+  },
+  async (a) => {
+    checkFresh(a.at);
+    const meta = a.thread ? engine.requireThread(a.thread) : null;
+    const cwd = meta && isDirectory(meta.cwd) ? meta.cwd : os.homedir();
+    await openTerminal(cwd, a.shell, a.command);
+    return { opened: true, cwd };
+  },
+);
+
+tool(
+  "open_folder",
+  "Open a thread's folder on this PC in VS Code or File Explorer. `at`: when it was clicked (ms).",
+  { thread: threadId, app: z.enum(["vscode", "explorer"]), at: z.number() },
+  async (a) => {
+    checkFresh(a.at);
+    const meta = engine.requireThread(a.thread);
+    await openFolder(meta.cwd, a.app);
+    return { opened: true, folder: meta.cwd };
+  },
+);
 
 tool(
   "thread_update",

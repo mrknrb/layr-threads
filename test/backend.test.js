@@ -135,6 +135,28 @@ try {
   const assistantTexts = read2.messages.filter((m) => m.role === "assistant").map((m) => m.text.toLowerCase());
   check(assistantTexts.some((t) => t.includes("one")) && assistantTexts.some((t) => t.includes("two")), "both messages answered", assistantTexts.slice(-3));
 
+  step("notifications, slash commands, changes");
+  check(hub.notifications.some((n) => /Claude finished/.test(n.text)), "a finished turn notifies", hub.notifications.map((n) => n.text));
+  check(hub.notifications.some((n) => /needs your permission/.test(n.text)), "a permission request notifies");
+  const cmds = await call("thread_commands", { thread: thread.id });
+  check(cmds.known && cmds.commands.some((c) => c.name === "compact"), "thread_commands lists Claude Code's commands",
+    cmds.commands.slice(0, 8).map((c) => c.name));
+  check(cmds.commands.some((c) => c.description), "with descriptions");
+  if (!skip.has("compact")) {
+    await call("thread_send", { thread: thread.id, text: "/compact" });
+    const endC = await runToEnd(thread.id);
+    const trC = await call("thread_transcript", { thread: thread.id, limit: 20 });
+    check(endC.thread.status === "done" && trC.entries.some((e) => e.type === "system" && /compacted/i.test(e.text ?? "")),
+      "a typed /compact compacts", trC.entries.slice(-5).map((e) => `${e.type} ${e.text ?? e.status ?? ""}`.slice(0, 80)));
+  }
+  const ch = await call("thread_changes", { thread: thread.id });
+  check(ch.changes && ch.changes.base === null && ch.changes.list.some((f) => f.path === "hello.txt" && f.state === "new"),
+    "thread_changes: the new file in the project's own checkout", ch.changes);
+  const df = await call("thread_diff", { thread: thread.id, file: "hello.txt" });
+  check(/\+hi/.test(df.diff), "thread_diff of the new file");
+  const stale = await call("run_in_terminal", { thread: thread.id, shell: "cmd", command: "echo hi", at: Date.now() - 120_000 }, { allowError: true });
+  check(/more than a minute old/.test(stale.error ?? ""), "a stale ▶ Run click doesn't run");
+
   if (!skip.has("image")) {
     step("image attachment");
     const png = redPng(16);

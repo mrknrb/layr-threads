@@ -18,10 +18,14 @@
         <span id="status-label" class="muted"></span>
       </div>
       <div class="head-meta">
+        <button id="changes-chip" class="chip-btn" hidden title="What this thread changed against its base branch"></button>
         <span id="workspace" class="badge mono"></span>
         <span id="cost" class="muted"></span>
+        <button class="btn ghost small icon-only" id="more" title="More"></button>
       </div>
     </header>
+    <section id="task" hidden></section>
+    <section id="changes" hidden></section>
     <main id="scroller">
       <div id="log">
         <div class="empty" id="loading">Loading the conversation…</div>
@@ -32,8 +36,10 @@
       <div id="todos" hidden></div>
       <div id="queue" hidden></div>
       <div id="composer">
+        <div id="slash" hidden></div>
+        <div id="prefix" hidden></div>
         <div id="attachments" hidden></div>
-        <textarea id="input" rows="1" placeholder="Message Claude…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <textarea id="input" rows="1" placeholder="Message Claude…  (Enter to send, Shift+Enter for a new line, / for commands)"></textarea>
         <div id="bar">
           <button class="btn ghost small icon-only" id="attach" title="Attach an image"></button>
           <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>

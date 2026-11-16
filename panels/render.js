@@ -5,16 +5,77 @@ import { h, icon } from "./common.js";
 
 marked.setOptions({ gfm: true, breaks: false });
 
-/** Markdown → a sanitized element, with copy buttons on code blocks and links opening outside. */
+/** DOMPurify's own list of safe link schemes, plus layr:// (links into layr). */
+const URI_OK = /^(?:(?:https?|mailto|tel|layr):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
+const PURIFY = { ADD_ATTR: ["target"], ALLOWED_URI_REGEXP: URI_OK };
+const SHELLS = {
+  powershell: "powershell", pwsh: "powershell", ps: "powershell", ps1: "powershell", cmd: "cmd", bat: "cmd",
+  batch: "cmd", bash: "bash", sh: "bash", shell: "bash", zsh: "bash",
+};
+
+/**
+ * What the panel does with links and command blocks: `openLink(url)` for layr:// links (never the browser),
+ * `run({shell, command})` for ▶ Run on a powershell / cmd / bash block (null: no Run buttons, e.g. on a phone).
+ */
+const hooks = { openLink: null, run: null };
+export function setMarkdownHooks(next) {
+  Object.assign(hooks, next);
+}
+
+/** `layr://plugin/path/id` in plain text becomes a link (marked links only http and www by itself). */
+function linkifyLayr(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (/layr:\/\//.test(n.data) && !n.parentElement.closest("a, code, pre") ? 1 : 2),
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const parts = node.data.split(/(layr:\/\/[^\s<>()"'`]+[^\s<>()"'`.,;:!?])/);
+    node.replaceWith(...parts.map((p, i) => (i % 2 ? h("a", { href: p }, p) : p)));
+  }
+}
+
+/** Inline Markdown (no paragraph), sanitized, as a <span>. */
+export function inlineMarkdown(text, cls = "") {
+  const el = h("span", { class: cls });
+  el.innerHTML = DOMPurify.sanitize(marked.parseInline(String(text ?? "")), PURIFY);
+  wireLinks(el);
+  return el;
+}
+
+function wireLinks(el) {
+  linkifyLayr(el);
+  for (const a of el.querySelectorAll("a[href]")) {
+    const href = a.getAttribute("href");
+    if (/^layr:\/\//i.test(href)) {
+      a.classList.add("layr-link");
+      a.removeAttribute("target");
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        hooks.openLink?.(href);
+      });
+    } else {
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    }
+  }
+}
+
+/** Markdown → a sanitized element, with copy buttons (and ▶ Run on command blocks) and links opening outside. */
 export function markdown(text, cls = "md") {
   const el = document.createElement("div");
   el.className = cls;
-  el.innerHTML = DOMPurify.sanitize(marked.parse(String(text ?? "")), { ADD_ATTR: ["target"] });
-  for (const a of el.querySelectorAll("a[href]")) {
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-  }
+  el.innerHTML = DOMPurify.sanitize(marked.parse(String(text ?? "")), PURIFY);
+  wireLinks(el);
   for (const pre of el.querySelectorAll("pre")) {
+    const lang = /language-([\w-]+)/.exec(pre.querySelector("code")?.className ?? "")?.[1]?.toLowerCase();
+    const shell = lang && Object.hasOwn(SHELLS, lang) ? SHELLS[lang] : null;
+    if (shell && hooks.run) {
+      const run = h("button", { class: "run-btn", title: `Run in a new ${shell} window on the PC, in the thread's folder` }, "▶ Run");
+      run.addEventListener("click", () => hooks.run({ shell, command: pre.querySelector("code")?.textContent ?? "" }, run));
+      pre.classList.add("runnable");
+      pre.append(run);
+    }
     const btn = h("button", { class: "copy-btn", title: "Copy" }, "Copy");
     btn.addEventListener("click", () => {
       navigator.clipboard?.writeText(pre.querySelector("code")?.innerText ?? pre.innerText).then(

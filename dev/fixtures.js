@@ -61,9 +61,27 @@ const demo = [
   { type: "user", text: "Nice. Can you also ask me which icon to use?" },
   { type: "turn_start", turn: 2 },
   { type: "approval", requestId: "r_demo3", kind: "question", tool: "AskUserQuestion", toolUseId: "tu8", input: {}, questions: [{ question: "Which icon should the sort button use?", header: "Icon", multiSelect: false, options: [{ label: "Arrows", description: "Two arrows, up and down" }, { label: "Funnel", description: "Like a filter" }, { label: "Text only", description: "Just the word Sort" }] }] },
+  { type: "approval_answer", requestId: "r_demo3", decision: "allow", answers: { "Which icon should the sort button use?": "Arrows" } },
+  { type: "tool_use", id: "tu9", name: "Read", input: { file_path: "C:\\code\\layr_flutter\\plugins\\notes\\panels\\icons.js" } },
+  { type: "tool_result", id: "tu9", content: "export const ICONS = {};", isError: false },
+  { type: "tool_use", id: "tu10", name: "Edit", input: { file_path: "C:\\code\\layr_flutter\\plugins\\notes\\panels\\icons.js", old_string: "{}", new_string: "{ sort: \"swap_vert\" }" } },
+  { type: "tool_result", id: "tu10", content: "ok", isError: false },
+  { type: "tool_use", id: "tu11", name: "Bash", input: { command: "pnpm test --filter notes", description: "Run the notes tests" } },
+  { type: "tool_result", id: "tu11", content: "Tests: 12 passed", isError: false },
+  { type: "text", id: "m4:0", text: [
+    "## Summary", "- The sort button has the arrows icon now", "", "## Changes",
+    "- Arrows icon on the sort button", "  It uses the Material icon swap_vert.", "  - Why: you picked Arrows", "",
+    "## Questions",
+    "1. 4 ⚪ Should the order be remembered?", "   - A. ⭐ Per notebook (85%) **each list keeps its own**", "   - B. Globally (55%) **one choice for all**",
+    "2. ☑️ 6 🟠 Which extra orders?", "   - A. ⭐ Oldest first (80%) **the reverse of newest**", "   - B. Z–A (40%) **rarely wanted**", "   - C. ⭐ By size (70%) **long notes stand out**",
+    "", "## How to test", "1. Start the notes plugin:", "", "```powershell", "Set-Location C:\\code\\layr_flutter; pnpm dev", "```", "",
+    "2. Open the task: layr://claude/thread/t_demo2", "",
+    "Status: asks · Risk: ui · Try: ready",
+  ].join("\n") },
+  { type: "turn_end", turn: 2, status: "done", costUsd: 0.03, durationMs: 192_000, usage: { inputTokens: 1000, outputTokens: 2900, cacheReadTokens: 770_000, cacheWriteTokens: 6000 } },
 ];
 
-const thread1 = meta("t_demo1", { title: "Add sorting to the notes list", workspace: { kind: "worktree", path: "C:\\code\\.layr-worktrees\\layr_flutter-notes-sorting", branch: "layr/notes-sorting" }, todos, status: "interrupted", turns: 2, preview: "Done. The list now has a Sort button" });
+const thread1 = meta("t_demo1", { title: "Add sorting to the notes list", workspace: { kind: "worktree", path: "C:\\code\\.layr-worktrees\\layr_flutter-notes-sorting", branch: "layr/notes-sorting" }, todos, status: "done", turns: 2, preview: "Done. The list now has a Sort button" });
 const thread2 = meta("t_demo2", { title: "Why does the relay drop messages on reconnect?", status: "failed", error: "Claude Code stopped", lastActivity: ago(80), preview: "Looking at relay.rs" });
 const thread3 = meta("t_demo3", { title: "Plugin: Lab notebook", kind: "plugin", status: "done", lastActivity: ago(300), preview: "Your lab notebook is ready in the Tools menu." });
 const thread4 = meta("t_demo4", { projectId: project2.id, title: "Import recipes from a URL", status: "waiting", pendingApprovals: ["r_x"], lastActivity: ago(1), preview: "Claude wants to run a command", workspace: { kind: "worktree", path: "C:\\x", branch: "layr/import-url" } });

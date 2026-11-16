@@ -112,6 +112,14 @@ a { color: var(--accent); }
 .dot.failed { background: var(--danger); }
 .dot.interrupted, .dot.idle { background: var(--fg-dim); }
 
+/* A right-click menu of our own, where the shell has none (ui.js) */
+.own-menu { position: fixed; z-index: 100; min-width: 180px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); display: flex; flex-direction: column; }
+.own-menu button { border: 0; background: none; text-align: left; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+.own-menu button:hover:not(:disabled) { background: var(--bg-3); }
+.own-menu button.danger { color: var(--danger); }
+.own-menu .sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
 .empty { padding: 40px 20px; text-align: center; color: var(--fg-dim); }
 .error-box {
   border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent);

@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Claude Code threads in your projects and worktrees, with approvals, live streaming, and plugins made with AI.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -26,6 +26,11 @@
     { "menu": "Tools", "command": "make-plugin", "group": "9" }
   ],
   "keybindings": [ { "key": "ctrl+alt+t", "command": "threads" } ],
+  "links": [ { "path": "thread", "panel": "thread", "param": "thread" } ],
+  "settings": [
+    { "id": "notifications", "type": "boolean", "title": "Notify when a thread finishes or needs you",
+      "description": "Not for archived threads, nor for background ones (permission mode dontAsk).", "default": true }
+  ],
   "backend": {
     "kind": "process",
     "runtime": "node",
@@ -36,10 +41,10 @@
     "groups": [
       { "id": "read", "label": "See projects, threads' status, models and usage",
         "tools": ["projects_list", "worktrees_list", "thread_list", "thread_status", "thread_wait", "approvals_list",
-                  "models_list", "usage", "plugins_folder"],
+                  "models_list", "usage", "plugins_folder", "thread_changes", "thread_commands"],
         "defaults": { "plugins": "allow" } },
       { "id": "conversations", "label": "Read what threads say",
-        "tools": ["thread_read", "thread_transcript", "attachment_read"],
+        "tools": ["thread_read", "thread_transcript", "attachment_read", "thread_diff"],
         "defaults": { "plugin:pipeline": "allow" } },
       { "id": "ask", "label": "Ask Claude one-off questions (uses your plan)", "tools": ["ask"],
         "defaults": { "plugin:pipeline": "allow", "plugin:concepts": "allow" } },
@@ -49,7 +54,9 @@
         "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow" } },
       { "id": "approve", "label": "Answer threads' permission requests and change their permissions",
         "tools": ["answer_approval", "thread_update"],
-        "defaults": { "plugin:pipeline": "allow" } }
+        "defaults": { "plugin:pipeline": "allow" } },
+      { "id": "pc", "label": "Open terminal windows running commands, and folders, on your PC",
+        "tools": ["run_in_terminal", "open_folder"] }
     ]
   }
 }

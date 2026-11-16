@@ -75,6 +75,7 @@ export function icon(name, size = 16) {
 
 const ICONS = {
   dot: '<circle cx="12" cy="12" r="3"/>',
+  more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',

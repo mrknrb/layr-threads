@@ -13,6 +13,7 @@ import {
   relTime,
   ready,
 } from "./common.js";
+import { adoptThread, contextMenu, copyText, onPhone, openFolderOnPc, threadLink, threadTask } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -178,7 +179,57 @@ function threadRow(t) {
   };
   row.addEventListener("click", open);
   row.addEventListener("keydown", (ev) => ev.key === "Enter" && open());
+  row.addEventListener("contextmenu", (ev) => void rowMenu(t, row, ev));
   return row;
+}
+
+/** A thread row's right-click menu (the shell's, layr.ui.contextMenu). */
+async function rowMenu(t, row, ev) {
+  ev.preventDefault();
+  // "+ Pipeline" only when the pipeline is there and the thread isn't a task yet.
+  const slow = new Promise((resolve) => setTimeout(() => resolve(undefined), 1500));
+  const task = t.archived ? undefined : await Promise.race([threadTask(t.id), slow]);
+  const phone = onPhone();
+  await contextMenu([
+    { label: "Open", icon: "open_in_new", run: () => row.click() },
+    "-",
+    phone ? null : { label: "Open folder in VS Code", icon: "code", run: () => openFolderOnPc(t.id, "vscode") },
+    phone ? null : { label: "Open folder in File Explorer", icon: "folder_open", run: () => openFolderOnPc(t.id, "explorer") },
+    task === null ? { label: "+ Pipeline", icon: "view_kanban", run: () => adoptThread(t.id) } : null,
+    { label: "Rename", icon: "edit", run: () => renameRow(t, row) },
+    { label: t.archived ? "Bring back" : "Archive", icon: t.archived ? "unarchive" : "archive", run: () => row.querySelector(".row-acts button")?.click() },
+    { label: "Copy link", icon: "link", run: () => copyText(threadLink(t.id), "Link copied") },
+  ], ev);
+}
+
+function renameRow(t, row) {
+  const title = row.querySelector(".title");
+  const field = h("input", { class: "input rename", value: t.title });
+  field.addEventListener("click", (e) => e.stopPropagation());
+  title.replaceWith(field);
+  field.focus();
+  field.select();
+  let finished = false;
+  const done = async (save) => {
+    if (finished) return;
+    finished = true;
+    const next = field.value.trim();
+    field.replaceWith(title);
+    if (!save || !next || next === t.title) return;
+    try {
+      const r = await call("thread_update", { thread: t.id, title: next });
+      state.threads.set(t.id, r.thread);
+      render();
+    } catch (error) {
+      notify(error.message, "error");
+    }
+  };
+  field.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") done(true);
+    if (e.key === "Escape") done(false);
+  });
+  field.addEventListener("blur", () => done(true));
 }
 
 function renderUsage() {

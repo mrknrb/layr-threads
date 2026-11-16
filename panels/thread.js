@@ -1,9 +1,12 @@
 // The thread panel: one Claude Code conversation, live. Loads the transcript with thread_transcript, then follows
-// the claude:thread.<id> events (entries, text deltas, status).
+// the claude:thread.<id> events (entries, text deltas, status). Each turn (your message and what followed) is a block
+// of its own: a finished one folds its work into one row (folds.js), replies in the boxes format get boxes with
+// answers to pick (replies.js), and a thread that is a pipeline task gets the task's strip, with Send, answers and Stop
+// going through the pipeline (pipeline.js).
+import { answerPrefix, hasPicks, pickIn, questionsOf, toggleAgree } from "./boxes.js";
 import {
   STATUS_LABEL,
   call,
-  duration,
   effortOptions,
   fillSelect,
   h,
@@ -17,7 +20,22 @@ import {
   ready,
   tokens,
 } from "./common.js";
-import { markdown, toolIcon, toolInputView, toolLabel, toolSummary } from "./render.js";
+import { createDraftStore } from "./drafts.js";
+import { foldTurn, groupRuns, isWork, tokensTitle } from "./folds.js";
+import { renderTaskStrip } from "./pipeline.js";
+import { markdown, setMarkdownHooks, toolIcon, toolInputView, toolLabel, toolSummary } from "./render.js";
+import { renderReply } from "./replies.js";
+import {
+  adoptThread,
+  contextMenu,
+  copyText,
+  onPhone,
+  openFolderOnPc,
+  openLink,
+  pipelineCall,
+  threadLink,
+  threadTask,
+} from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const log = $("log");
@@ -41,6 +59,17 @@ const state = {
   buffered: [],
   turnStartedAt: null,
   titleSet: false,
+  /** The latest top-level reply: {entry, holder, sections}; its questions can be answered. */
+  latest: null,
+  /** Answers picked in the latest reply: {replyId, picked} (boxes.js picks). */
+  picks: { replyId: null, picked: {} },
+  /** Half-filled answers to pending questions: {[requestId]: {[question index]: {picked, own}}}. */
+  answers: {},
+  /** The pipeline task of this thread: undefined (no pipeline), null (not a task) or the task. */
+  task: undefined,
+  changes: null,
+  commands: null,
+  phone: false,
 };
 
 // ------------------------------------------------------------------ start
@@ -52,13 +81,31 @@ if (!state.id) {
   throw new Error("no thread");
 }
 layr.panel.setState({ thread: state.id });
+state.phone = onPhone();
 $("attach").append(icon("image"));
+$("more").append(icon("more", 16));
+const drafts = createDraftStore(layr.data);
+setMarkdownHooks({
+  openLink,
+  run: state.phone ? null : async ({ shell, command }, btn) => {
+    btn.disabled = true;
+    try {
+      await call("run_in_terminal", { thread: state.id, shell, command, at: Date.now() });
+      btn.textContent = "✓ Opened";
+      setTimeout(() => (btn.textContent = "▶ Run"), 1500);
+    } catch (error) {
+      notify(error.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  },
+});
 
 on(`claude:thread.${state.id}`, (ev) => {
   if (!state.loaded) state.buffered.push(ev);
   else handleEvent(ev);
 });
-
+on("pipeline:changed", () => void refreshTask());
 
 // ------------------------------------------------------------------ loading
 
@@ -66,15 +113,17 @@ async function loadTranscript() {
   try {
     const r = await call("thread_transcript", { thread: state.id, limit: 1500 });
     log.replaceChildren();
+    main.turns = [];
     state.more = r.more;
     state.pending = new Set(r.pending ?? []);
     if (r.more) log.append(loadMoreButton());
-    for (const e of r.entries) addEntry(e, { initial: true });
+    for (const e of r.entries) addEntry(e);
     state.firstSeq = r.entries[0]?.seq ?? null;
     setThread(r.thread);
     state.loaded = true;
     for (const ev of state.buffered.splice(0)) handleEvent(ev);
     refreshApprovals();
+    renderLatest();
     scrollToBottom(true);
   } catch (error) {
     log.replaceChildren(h("div", { class: "error-box" }, `Could not load the thread: ${error.message}`));
@@ -87,11 +136,12 @@ function loadMoreButton() {
     btn.disabled = true;
     const r = await call("thread_transcript", { thread: state.id, limit: 500, before: state.firstSeq });
     const height = scroller.scrollHeight;
-    // Render the older entries into a holder, then move them in front of what is shown.
-    const holder = h("div");
-    for (const e of r.entries) addEntry(e, { initial: true, target: holder });
+    // Render the older entries into a holder of their own turns, then move them in front of what is shown.
+    const older = { container: h("div"), turns: [] };
+    for (const e of r.entries) addEntry(e, { into: older });
     btn.remove();
-    log.prepend(...(r.more ? [btn] : []), ...holder.childNodes);
+    log.prepend(...(r.more ? [btn] : []), ...older.container.childNodes);
+    main.turns.unshift(...older.turns);
     state.firstSeq = r.entries[0]?.seq ?? state.firstSeq;
     btn.disabled = false;
     scroller.scrollTop = scroller.scrollHeight - height;
@@ -111,6 +161,7 @@ function handleEvent(ev) {
     }
     const near = isNearBottom();
     addEntry(ev.entry);
+    renderLatest();
     if (near) scrollToBottom();
   } else if (ev.kind === "delta") {
     const near = isNearBottom();
@@ -131,58 +182,134 @@ async function fillGap() {
     state.pending = new Set(r.pending ?? []);
     setThread(r.thread);
     refreshApprovals();
+    renderLatest();
     scrollToBottom();
   } finally {
     filling = false;
   }
 }
 
+// ------------------------------------------------------------------ turns
+
+/** Where entries go: the log and its turns, or (Show earlier messages) a holder of older turns. */
+const main = { container: log, turns: [] };
+
+/** A turn: your message and what followed, up to your next one. */
+function newTurn(into, userEl) {
+  const turn = { el: h("div", { class: "turn" }), user: userEl, items: [], ended: false, open: false, groupsOpen: new Set(), foldRow: null };
+  if (userEl) turn.el.append(userEl);
+  into.container.append(turn.el);
+  into.turns.push(turn);
+  return turn;
+}
+
+function currentTurn(into) {
+  return into.turns.at(-1) ?? newTurn(into, null);
+}
+
+/** Add an item ({kind, name?, entry, el}) to the turn; in a running turn a run of finished work before it groups. */
+function addItem(turn, item) {
+  if (!turn.ended && !isWork(item) && item.kind !== "end") wrapRun(turn);
+  turn.items.push(item);
+  turn.el.append(item.el);
+}
+
+/** The work items right before the end of the running turn, two or more, go into one group in place. */
+function wrapRun(turn) {
+  let start = turn.items.length;
+  while (start > 0 && isWork(turn.items[start - 1]) && !turn.items[start - 1].grouped) start--;
+  const run = turn.items.slice(start);
+  if (run.length < 2 || run.some((i) => i.el.classList?.contains("needs-you"))) return;
+  const [row] = groupRuns(run);
+  if (row?.type !== "group") return;
+  const marker = document.createComment("");
+  run[0].el.before(marker);
+  marker.replaceWith(groupEl(turn, run, row.label));
+  for (const i of run) i.grouped = true;
+}
+
+function groupEl(turn, items, label) {
+  const key = items[0].entry?.seq ?? items[0].entry?.id;
+  const chev = icon("chevron", 13);
+  chev.classList.add("chev");
+  const det = h("details", { class: "group", open: turn.groupsOpen.has(key) },
+    h("summary", {}, chev, icon("tool", 13), h("span", { class: "label" }, label), h("span", { class: "count muted" }, `${items.length}`)));
+  det.addEventListener("toggle", () => (det.open ? turn.groupsOpen.add(key) : turn.groupsOpen.delete(key)));
+  const body = h("div", { class: "group-body" });
+  for (const i of items) body.append(i.el);
+  det.append(body);
+  return det;
+}
+
+/** Lay a finished turn out again: folded (only what stays, behind one row) or open, runs of work grouped. */
+function arrange(turn) {
+  const fold = foldTurn(turn.items);
+  if (!fold) {
+    turn.foldRow?.remove();
+    turn.foldRow = null;
+  } else {
+    const chev = icon("chevron", 13);
+    chev.classList.add("chev");
+    const end = turn.items.find((i) => i.kind === "end")?.entry;
+    turn.foldRow = h("button", { class: `fold-row${turn.open ? " open" : ""} ${end?.status ?? ""}`, title: tokensTitle(end?.usage) },
+      chev, h("span", {}, fold.label), h("span", { class: "muted" }, turn.open ? "hide the work" : `${fold.hidden.size} steps`));
+    turn.foldRow.addEventListener("click", () => {
+      turn.open = !turn.open;
+      arrange(turn);
+    });
+  }
+  const visible = turn.items.filter((_, i) => !fold || turn.open || !fold.hidden.has(i));
+  const rows = groupRuns(visible).map((r) => (r.type === "item" ? visible[r.index].el : groupEl(turn, r.indexes.map((k) => visible[k]), r.label)));
+  for (const i of turn.items) i.grouped = true;
+  turn.el.replaceChildren(...[turn.user, turn.foldRow, ...rows].filter(Boolean));
+  turn.el.classList.toggle("folded", Boolean(fold) && !turn.open);
+}
+
 // ------------------------------------------------------------------ entries
 
-function addEntry(e, { initial = false, target } = {}) {
-  if (!target) state.lastSeq = Math.max(state.lastSeq, e.seq);
+function addEntry(e, { into = main } = {}) {
+  if (into === main) state.lastSeq = Math.max(state.lastSeq, e.seq);
   const parentCard = e.parent ? state.tools.get(e.parent) : null;
-  const container = target ?? (parentCard ? parentCard.children : log);
-  const put = (el) => {
-    if (parentCard) parentCard.children.hidden = false;
-    container.append(el);
-    return el;
-  };
+  if (parentCard && !parentCard.hidden) return addChild(parentCard, e);
+  const kept = (el) => el && addItem(currentTurn(into), { kind: "kept", entry: e, el });
   switch (e.type) {
     case "created":
-      return put(h("div", { class: "sys" }, `Started in ${e.workspace?.kind === "worktree" ? `worktree ${e.workspace.branch}` : e.workspace?.path ?? ""}`));
+      return kept(h("div", { class: "sys" }, `Started in ${e.workspace?.kind === "worktree" ? `worktree ${e.workspace.branch}` : e.workspace?.path ?? ""}`));
     case "user":
-      return put(userBubble(e));
+      if (e.steer) return kept(userBubble(e));
+      return newTurn(into, userBubble(e));
     case "turn_start":
       state.turnStartedAt = Date.parse(e.ts);
       return null;
     case "text": {
+      const el = replyHolder(e);
       const liveBlock = state.live.get(e.id);
-      const el = h("div", { class: "msg-text" }, markdown(e.text));
+      const turn = currentTurn(into);
       if (liveBlock) {
-        liveBlock.el.replaceWith(el);
         state.live.delete(e.id);
-        return el;
+        liveBlock.el.remove();
       }
-      return put(el);
+      addItem(turn, { kind: "text", entry: e, el });
+      if (into === main) setLatest(e, el);
+      return el;
     }
     case "thinking": {
       const liveBlock = state.live.get(e.id);
       const el = thinkingBlock(e.text, false);
       if (liveBlock) {
         el.open = liveBlock.el.open;
-        liveBlock.el.replaceWith(el);
+        liveBlock.el.remove();
         state.live.delete(e.id);
-        return el;
       }
-      return put(el);
+      addItem(currentTurn(into), { kind: "thinking", entry: e, el });
+      return el;
     }
     case "tool_use":
       if (e.name === "AskUserQuestion" || e.name === "ExitPlanMode") {
         state.tools.set(e.id, { hidden: true, name: e.name });
         return null;
       }
-      return put(toolCard(e));
+      return addItem(currentTurn(into), { kind: "tool", name: e.name, entry: e, el: toolCard(e) });
     case "tool_result": {
       const card = state.tools.get(e.id);
       if (!card || card.hidden) return null;
@@ -190,29 +317,79 @@ function addEntry(e, { initial = false, target } = {}) {
       return null;
     }
     case "approval":
-      return addApproval(e, put);
+      return addApproval(e, (el) => kept(el));
     case "approval_answer":
       state.answered.set(e.requestId, e);
       state.pending.delete(e.requestId);
+      delete state.answers[e.requestId];
       renderApproval(e.requestId);
       return null;
-    case "turn_end":
-      clearLive();
+    case "turn_end": {
+      if (into === main) clearLive();
       state.turnStartedAt = null;
       for (const card of state.tools.values()) if (card.state && !card.done) markToolUnfinished(card);
-      return put(turnEnd(e));
+      const turn = currentTurn(into);
+      turn.items.push({ kind: "end", entry: e, el: turnEnd(e) });
+      turn.ended = true;
+      turn.el.dataset.ended = e.status;
+      arrange(turn);
+      if (into === main) {
+        scheduleChanges();
+        if (!state.commandsKnown) state.commands = null;
+      }
+      return null;
+    }
     case "system":
       if (e.subtype === "init") {
         if (!e.failedMcp?.length) return null;
-        return put(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
+        return kept(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
       }
-      return put(h("div", { class: "sys" }, e.text));
+      return kept(h("div", { class: "sys" }, e.text));
+    case "error":
+      return kept(h("div", { class: "error-box" }, e.message));
+    default:
+      return null;
+  }
+}
+
+/** Entries of a subagent go inside its Task card. */
+function addChild(card, e) {
+  const put = (el) => {
+    card.children.hidden = false;
+    card.children.append(el);
+    return el;
+  };
+  switch (e.type) {
+    case "text":
+      return put(h("div", { class: "msg-text" }, markdown(e.text)));
+    case "thinking":
+      return put(thinkingBlock(e.text, false));
+    case "tool_use":
+      if (e.name === "AskUserQuestion" || e.name === "ExitPlanMode") return state.tools.set(e.id, { hidden: true, name: e.name });
+      return put(toolCard(e));
+    case "tool_result": {
+      const c = state.tools.get(e.id);
+      if (c && !c.hidden) setToolResult(c, e);
+      return null;
+    }
+    case "approval":
+      return addApproval(e, put);
     case "error":
       return put(h("div", { class: "error-box" }, e.message));
     default:
       return null;
   }
-  void initial;
+}
+
+/** "14:05", the full date on hover. */
+function when(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date().toDateString() === d.toDateString();
+  const text = today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return h("time", { class: "when", datetime: iso, title: d.toLocaleString([], { dateStyle: "full", timeStyle: "medium" }) }, text);
 }
 
 function userBubble(e) {
@@ -230,7 +407,80 @@ function userBubble(e) {
     el.append(imgs);
   }
   if (e.text) el.append(e.text);
-  return el;
+  return h("div", { class: "user-wrap" }, el, when(e.ts));
+}
+
+/** A reply: boxes or Markdown, with its time. The latest one is drawn again with its answers pickable. */
+function replyHolder(e) {
+  const holder = h("div", { class: "msg-text" });
+  const { el, sections } = renderReply(e.text);
+  holder.append(...[el, when(e.ts)].filter(Boolean));
+  holder.reply = { entry: e, sections };
+  return holder;
+}
+
+function setLatest(e, holder) {
+  const prev = state.latest;
+  state.latest = { entry: e, holder, sections: holder.reply.sections };
+  // The previous latest reply's questions can't be answered any more.
+  if (prev && prev.holder !== holder && questionsOf(prev.sections).length) drawReply(prev, null);
+  if (state.picks.replyId !== e.id) {
+    const had = hasPicks(state.picks.picked);
+    state.picks = { replyId: e.id, picked: {} };
+    if (had && state.loaded) saveDraft();
+  }
+}
+
+/** Draw the latest reply with its answers pickable (when it has questions), and the composer's prefix. */
+function renderLatest() {
+  const l = state.latest;
+  if (l && questionsOf(l.sections).length) drawReply(l, picker());
+  renderPrefix();
+}
+
+function drawReply(l, pick) {
+  const { el } = renderReply(l.entry.text, pick);
+  l.holder.replaceChildren(...[el, when(l.entry.ts)].filter(Boolean));
+}
+
+function picker() {
+  return {
+    picked: state.picks.picked,
+    onPick: (q, letter) => {
+      state.picks.picked = pickIn(state.picks.picked, q, letter);
+      afterPick();
+    },
+    onAgree: () => {
+      state.picks.picked = toggleAgree(state.picks.picked);
+      afterPick();
+    },
+  };
+}
+
+function afterPick() {
+  renderLatest();
+  saveDraft();
+  input.focus();
+}
+
+/** What the next message starts with: "I agree with everything recommended" or "My answers: …". */
+function currentPrefix() {
+  const l = state.latest;
+  if (!l || state.picks.replyId !== l.entry.id) return "";
+  return answerPrefix(questionsOf(l.sections), state.picks.picked);
+}
+
+function renderPrefix() {
+  const el = $("prefix");
+  const text = currentPrefix();
+  el.hidden = !text;
+  if (!text) return el.replaceChildren();
+  const clear = h("button", { class: "btn ghost small icon-only", title: "Clear the picked answers" }, icon("x", 12));
+  clear.addEventListener("click", () => {
+    state.picks.picked = {};
+    afterPick();
+  });
+  el.replaceChildren(h("span", { class: "label" }, "Sent first:"), h("span", { class: "text" }, text), clear);
 }
 
 function thinkingBlock(text, live) {
@@ -248,7 +498,7 @@ function addDelta(d) {
     const el = d.block === "thinking" ? thinkingBlock("", true) : h("div", { class: "msg-text live" });
     block = { el, text: "", block: d.block, rendered: 0 };
     state.live.set(d.key, block);
-    log.append(el);
+    currentTurn(main).el.append(el);
   }
   block.text += d.text;
   // Re-render the Markdown at most every 80 ms.
@@ -346,6 +596,12 @@ function turnEnd(e) {
   return h("div", { class: `turn-end ${e.status}` }, icon(e.status === "done" ? "check" : e.status === "failed" ? "x" : "stop", 13), bits.join(" · "));
 }
 
+function duration(ms) {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
 // ------------------------------------------------------------------ approvals
 
 function addApproval(e, put) {
@@ -384,7 +640,7 @@ function renderApproval(requestId) {
     const parts = [];
     if (e.kind === "plan" && e.plan && !a.inline) parts.push(h("div", { class: "plan-box md-wrap" }, markdown(e.plan)));
     a.el.replaceChildren(
-      ...(e.kind === "plan" && e.plan ? [h("div", { class: "approval" , style: { borderColor: "var(--border)", background: "var(--bg-2)" } },
+      ...(e.kind === "plan" && e.plan ? [h("div", { class: "approval", style: { borderColor: "var(--border)", background: "var(--bg-2)" } },
         h("div", { class: "ask" }, icon("list"), "Claude's plan"), ...parts)] : []),
       h("div", { class: `approval done ${cls}${a.inline ? " inline" : ""}` },
         icon(decision.startsWith("allow") ? "check" : decision === "deny" ? "x" : "dot", 14), text),
@@ -401,10 +657,19 @@ function formatAnswers(answers) {
   return Object.values(answers).map((v) => (Array.isArray(v) ? v.join(", ") : v)).join("; ");
 }
 
+/** Answer what the thread waits for: through the pipeline for a task's thread, else answer_approval. */
 async function answer(e, args, buttons) {
   for (const b of buttons) b.disabled = true;
   try {
-    await call("answer_approval", { thread: state.id, requestId: e.requestId, ...args });
+    if (state.task) {
+      const { number } = state.task;
+      await pipelineCall("send", args.answers && args.decision !== "deny" ? { number, answers: args.answers }
+        : { number, decision: args.decision, ...(args.message ? { message: args.message } : {}) });
+    } else {
+      await call("answer_approval", { thread: state.id, requestId: e.requestId, ...args });
+    }
+    delete state.answers[e.requestId];
+    saveDraft();
   } catch (error) {
     notify(error.message, "error");
     for (const b of buttons) b.disabled = false;
@@ -424,13 +689,12 @@ function permissionCard(e, inline) {
   msg.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") deny.click();
   });
-  const el = h("div", { class: `approval${inline ? " inline" : ""}` },
+  return h("div", { class: `approval${inline ? " inline" : ""}` },
     h("div", { class: "ask" }, icon("shield"), what),
     e.reason || e.blockedPath ? h("div", { class: "reason" }, [e.reason, e.blockedPath].filter(Boolean).join(" · ")) : null,
     inline ? null : toolInputView(e.tool, e.input),
     h("div", { class: "actions" }, allow, e.canAlwaysAllow !== false ? always : null, deny, msg),
   );
-  return el;
 }
 
 function describePermission(e) {
@@ -441,14 +705,20 @@ function describePermission(e) {
   return `Claude wants to ${verb}${s && e.tool !== "Bash" ? `: ${s}` : ""}`;
 }
 
+/** Claude's question; what you pick or type is kept in the draft until it's answered. */
 function questionCard(e, inline) {
-  const picked = e.questions.map(() => new Set());
-  const others = e.questions.map(() => h("input", { class: "input", placeholder: "Or type your own answer" }));
+  const saved = (state.answers[e.requestId] ??= {});
+  const picked = e.questions.map((_, qi) => new Set(saved[qi]?.picked ?? []));
+  const others = e.questions.map((_, qi) => h("input", { class: "input", placeholder: "Or type your own answer", value: saved[qi]?.own ?? "" }));
   const submit = h("button", { class: "btn small primary" }, "Answer");
   const skip = h("button", { class: "btn small" }, "Skip");
+  const keep = () => {
+    e.questions.forEach((_, qi) => (saved[qi] = { picked: [...picked[qi]], own: others[qi].value }));
+    saveDraft();
+  };
   const qs = e.questions.map((q, qi) => {
     const opts = q.options.map((o) => {
-      const btn = h("button", { class: `opt${q.multiSelect ? " multi" : ""}` }, h("span", { class: "mark" }),
+      const btn = h("button", { class: `opt${q.multiSelect ? " multi" : ""}${picked[qi].has(o.label) ? " sel" : ""}` }, h("span", { class: "mark" }),
         h("span", {}, h("div", {}, o.label), o.description && o.description !== o.label ? h("div", { class: "d" }, o.description) : null));
       btn.addEventListener("click", () => {
         if (q.multiSelect) picked[qi].has(o.label) ? picked[qi].delete(o.label) : picked[qi].add(o.label);
@@ -456,13 +726,16 @@ function questionCard(e, inline) {
           picked[qi].clear();
           picked[qi].add(o.label);
         }
-        for (const b of btn.parentElement.children) b.classList.remove("sel");
-        [...btn.parentElement.children].forEach((b, i) => picked[qi].has(q.options[i].label) && b.classList.add("sel"));
+        [...btn.parentElement.children].forEach((b, i) => b.classList.toggle("sel", picked[qi].has(q.options[i].label)));
         update();
+        keep();
       });
       return btn;
     });
-    others[qi].addEventListener("input", update);
+    others[qi].addEventListener("input", () => {
+      update();
+      keep();
+    });
     return h("div", { class: "question" }, q.header ? h("div", { class: "q-head" }, q.header) : null,
       h("div", { class: "q-text" }, q.question), h("div", { class: "opts" }, opts), others[qi]);
   });
@@ -507,7 +780,7 @@ function setThread(t) {
     state.titleSet = true;
   }
   $("status-dot").className = `dot ${t.status}`;
-  $("status-label").textContent = STATUS_LABEL[t.status] ?? t.status;
+  $("status-label").textContent = `${STATUS_LABEL[t.status] ?? t.status}${t.archived ? " · archived" : ""}`;
   const ws = t.workspace ?? {};
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
@@ -521,11 +794,14 @@ function setThread(t) {
     state.pending = new Set(t.pendingApprovals ?? []);
     refreshApprovals();
   }
+  if (prev && busy(prev) && !busy(t)) scheduleChanges();
   renderTodos(t.todos ?? []);
   renderQueue(t);
   renderPickers();
   renderWorking();
 }
+
+const busy = (t) => t && (t.status === "running" || t.status === "starting" || t.status === "waiting");
 
 function short(p) {
   if (!p) return "";
@@ -536,16 +812,16 @@ function short(p) {
 let workingTimer = null;
 function renderWorking() {
   const t = state.thread;
-  const busy = t && (t.status === "running" || t.status === "starting" || t.status === "waiting");
+  const isBusy = busy(t);
   const el = $("working");
-  el.hidden = !busy;
+  el.hidden = !isBusy;
   el.classList.toggle("waiting", t?.status === "waiting");
-  $("stop").hidden = !busy;
-  $("steer").hidden = !busy || !input.value.trim();
-  $("send").textContent = busy ? "Queue" : "Send";
-  $("hint").textContent = busy ? "Enter queues · Ctrl+Enter steers" : "";
+  $("stop").hidden = !isBusy;
+  $("steer").hidden = !isBusy || !input.value.trim() || Boolean(state.task);
+  $("send").textContent = isBusy && !state.task ? "Queue" : "Send";
+  $("hint").textContent = state.task ? "Sent through the pipeline" : isBusy ? "Enter queues · Ctrl+Enter steers" : "";
   clearInterval(workingTimer);
-  if (!busy) return;
+  if (!isBusy) return;
   const tick = () => {
     const secs = state.turnStartedAt ? Math.round((Date.now() - state.turnStartedAt) / 1000) : null;
     $("working-text").textContent =
@@ -620,11 +896,15 @@ for (const [id, key] of [["model", "model"], ["effort", "effort"], ["mode", "per
   });
 }
 
-// Rename by clicking the title.
+// Rename by clicking the title (or from the ⋯ menu).
 $("head").addEventListener("click", (ev) => {
-  if (ev.target.id !== "title" || !state.thread) return;
+  if (ev.target.id === "title") startRename();
+});
+
+function startRename() {
+  const heading = $("title");
+  if (!heading || !state.thread) return;
   const t = state.thread;
-  const heading = ev.target;
   const field = h("input", { class: "input", id: "title-edit", value: t.title });
   heading.replaceWith(field);
   field.focus();
@@ -646,7 +926,180 @@ $("head").addEventListener("click", (ev) => {
     if (e.key === "Escape") done(false);
   });
   field.addEventListener("blur", () => done(true));
+}
+
+/** The thread's menu: the ⋯ button and a right-click on the header. */
+function threadMenu(ev) {
+  const t = state.thread;
+  if (!t) return;
+  void contextMenu([
+    state.phone ? null : { label: "Open folder in VS Code", icon: "code", run: () => openFolderOnPc(state.id, "vscode") },
+    state.phone ? null : { label: "Open folder in File Explorer", icon: "folder_open", run: () => openFolderOnPc(state.id, "explorer") },
+    state.phone ? null : "-",
+    state.task === null && !t.archived ? { label: "+ Pipeline", icon: "view_kanban", run: () => adoptThread(state.id).then(() => refreshTask()) } : null,
+    { label: "Rename", icon: "edit", run: startRename },
+    { label: t.archived ? "Bring back" : "Archive", icon: t.archived ? "unarchive" : "archive", run: async () => {
+      const r = await call("thread_archive", { thread: state.id, archived: !t.archived }).catch((e) => notify(e.message, "error"));
+      if (r?.thread) setThread(r.thread);
+    } },
+    { label: "Copy link", icon: "link", run: () => copyText(threadLink(state.id), "Link copied") },
+  ], ev);
+}
+$("more").addEventListener("click", (ev) => threadMenu(ev));
+$("head").addEventListener("contextmenu", (ev) => {
+  if (ev.target.closest("input")) return;
+  threadMenu(ev);
 });
+
+// ------------------------------------------------------------------ the pipeline task
+
+let taskTimer = null;
+async function refreshTask() {
+  const task = await threadTask(state.id);
+  state.task = task;
+  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask());
+  renderWorking();
+  clearTimeout(taskTimer);
+  // While there is a pipeline, look again every 10 s (its events may not reach this panel).
+  if (task !== undefined) taskTimer = setTimeout(refreshTask, 10_000);
+}
+
+// ------------------------------------------------------------------ changes
+
+let changesTimer = null;
+function scheduleChanges() {
+  clearTimeout(changesTimer);
+  changesTimer = setTimeout(loadChanges, 1200);
+}
+
+async function loadChanges() {
+  clearTimeout(changesTimer);
+  try {
+    state.changes = (await call("thread_changes", { thread: state.id })).changes;
+  } catch {
+    state.changes = null;
+  }
+  renderChanges();
+  changesTimer = setTimeout(loadChanges, busy(state.thread) ? 20_000 : 60_000);
+}
+
+
+function renderChanges() {
+  const c = state.changes;
+  const chip = $("changes-chip");
+  const drawer = $("changes");
+  if (!c || (!c.files && !c.commits && !c.behind)) {
+    chip.hidden = true;
+    drawer.hidden = true;
+    return;
+  }
+  chip.hidden = false;
+  chip.replaceChildren(...[h("span", { class: "add" }, `+${c.added}`), " ", h("span", { class: "del" }, `−${c.removed}`),
+    ` · ${c.files} ${c.files === 1 ? "file" : "files"}`,
+    c.behind ? h("span", { class: "behind", title: `${c.base} has ${c.behind} commit(s) this branch hasn't` }, ` ↓${c.behind} behind`) : null,
+    c.conflicts?.length ? h("span", { class: "conflict", title: c.conflicts.join("\n") }, " ⚠ conflicts") : null].filter(Boolean));
+  chip.classList.toggle("on", !drawer.hidden);
+  if (!drawer.hidden) drawDrawer();
+}
+
+$("changes-chip").addEventListener("click", () => {
+  const drawer = $("changes");
+  drawer.hidden = !drawer.hidden;
+  $("changes-chip").classList.toggle("on", !drawer.hidden);
+  if (!drawer.hidden) {
+    drawDrawer();
+    void loadChanges();
+  }
+});
+
+let drawerTab = "files";
+const openDiffs = new Set();
+
+function drawDrawer() {
+  const c = state.changes;
+  const drawer = $("changes");
+  if (!c) return;
+  const tabs = ["files", "commits"].map((tab) => {
+    const b = h("button", { class: `tab${drawerTab === tab ? " on" : ""}` }, tab === "files" ? `Files ${c.files}` : `Commits ${c.commits}`);
+    b.addEventListener("click", () => {
+      drawerTab = tab;
+      drawDrawer();
+    });
+    return b;
+  });
+  const merge = c.base
+    ? [`Against ${c.base}`, `${c.commits} commit${c.commits === 1 ? "" : "s"} ahead`, c.behind ? `↓${c.behind} behind` : "up to date",
+      c.conflicts === null ? "merge not checked (old git)" : c.conflicts?.length ? `⚠ conflicts in ${c.conflicts.join(", ")}` : "merges cleanly"]
+    : ["Uncommitted changes in the project's own folder"];
+  const close = h("button", { class: "btn ghost small icon-only", title: "Close" }, icon("x", 13));
+  close.addEventListener("click", () => $("changes-chip").click());
+  const body = drawerTab === "files" ? filesView(c) : commitsView(c);
+  drawer.replaceChildren(
+    h("div", { class: "drawer-head" }, ...tabs, h("span", { class: `merge${c.conflicts?.length ? " bad" : ""}` }, merge.join(" · ")), close),
+    body);
+}
+
+function filesView(c) {
+  const groups = [["uncommitted", "Uncommitted"], ["new", "New"], ["committed", "Committed"]];
+  const out = h("div", { class: "files" });
+  for (const [st, title] of groups) {
+    const files = (c.list ?? []).filter((f) => f.state === st);
+    if (!files.length) continue;
+    out.append(h("div", { class: "files-title" }, `${title} · ${files.length}`));
+    for (const f of files) {
+      const row = h("button", { class: "file-row", title: f.path }, h("span", { class: "path" }, f.path),
+        h("span", { class: "add" }, `+${f.added}`), h("span", { class: "del" }, `−${f.removed}`));
+      const holder = h("div", { class: "file-diff" });
+      const show = async () => {
+        holder.replaceChildren(h("div", { class: "muted" }, "Loading…"));
+        try {
+          const r = await call("thread_diff", { thread: state.id, file: f.path });
+          holder.replaceChildren(unifiedDiff(r.diff));
+        } catch (error) {
+          holder.replaceChildren(h("div", { class: "error-box" }, error.message));
+        }
+      };
+      row.addEventListener("click", () => {
+        if (openDiffs.has(f.path)) {
+          openDiffs.delete(f.path);
+          holder.replaceChildren();
+        } else {
+          openDiffs.add(f.path);
+          void show();
+        }
+      });
+      if (openDiffs.has(f.path)) void show();
+      out.append(row, holder);
+    }
+  }
+  if (!out.children.length) out.append(h("div", { class: "muted" }, "No changed files"));
+  return out;
+}
+
+function commitsView(c) {
+  const list = c.commitList ?? [];
+  if (!list.length) return h("div", { class: "files muted" }, c.base ? "No commits on this branch yet" : "Not on a branch of its own");
+  return h("div", { class: "files" }, list.map((k) => h("div", { class: "commit-row", title: k.sha },
+    h("span", { class: "sha mono" }, k.sha.slice(0, 7)), h("span", { class: "subject" }, k.subject), when(k.at))));
+}
+
+/** A unified diff, coloured line by line. */
+function unifiedDiff(text) {
+  const el = h("div", { class: "diff" });
+  const lines = String(text ?? "").split("\n");
+  let started = false;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      started = true;
+      el.append(h("div", { class: "ln gap" }, h("span", { class: "g" }, "⋯"), h("span", { class: "t" }, line)));
+    } else if (!started) continue;
+    else if (line.startsWith("+")) el.append(h("div", { class: "ln add" }, h("span", { class: "g" }, "+"), h("span", { class: "t" }, line.slice(1) || " ")));
+    else if (line.startsWith("-")) el.append(h("div", { class: "ln del" }, h("span", { class: "g" }, "-"), h("span", { class: "t" }, line.slice(1) || " ")));
+    else if (!line.startsWith("\\")) el.append(h("div", { class: "ln" }, h("span", { class: "g" }), h("span", { class: "t" }, line.slice(1) || " ")));
+  }
+  if (!el.children.length) el.append(h("div", { class: "ln gap" }, h("span", { class: "t" }, text?.trim() ? text : "No text changes (binary, or only the mode)")));
+  return el;
+}
 
 // ------------------------------------------------------------------ composer
 
@@ -654,11 +1107,16 @@ function autosize() {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.4)}px`;
   const t = state.thread;
-  $("steer").hidden = !(t && (t.status === "running" || t.status === "waiting")) || !input.value.trim();
+  $("steer").hidden = !(t && (t.status === "running" || t.status === "waiting")) || !input.value.trim() || Boolean(state.task);
 }
-input.addEventListener("input", autosize);
+input.addEventListener("input", () => {
+  autosize();
+  renderSlash();
+  saveDraft();
+});
 
 input.addEventListener("keydown", (ev) => {
+  if (slashKey(ev)) return;
   if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     send(ev.ctrlKey || ev.metaKey ? "steer" : "queue");
@@ -669,7 +1127,8 @@ $("steer").addEventListener("click", () => send("steer"));
 $("stop").addEventListener("click", async () => {
   $("stop").disabled = true;
   try {
-    await call("thread_interrupt", { thread: state.id });
+    if (state.task) await pipelineCall("stop", { number: state.task.number });
+    else await call("thread_interrupt", { thread: state.id });
   } catch (error) {
     notify(error.message, "error");
   } finally {
@@ -678,18 +1137,26 @@ $("stop").addEventListener("click", async () => {
 });
 
 async function send(mode) {
-  const text = input.value;
+  const typed = input.value;
+  const prefix = currentPrefix();
+  const text = prefix ? (typed.trim() ? `${prefix}\n\n${typed}` : prefix) : typed;
   if (!text.trim() && !state.attachments.length) return;
   const images = state.attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const sendBtn = $("send");
   sendBtn.disabled = true;
   try {
-    const r = await call("thread_send", { thread: state.id, text, images, mode });
+    let r = null;
+    if (state.task) await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
+    else r = await call("thread_send", { thread: state.id, text, images, mode });
     input.value = "";
     state.attachments = [];
+    state.picks.picked = {};
     renderAttachments();
+    renderLatest();
+    renderSlash();
     autosize();
-    if (r.thread) setThread(r.thread);
+    void drafts.clear(state.id);
+    if (r?.thread) setThread(r.thread);
     scrollToBottom(true);
   } catch (error) {
     notify(error.message, "error");
@@ -697,6 +1164,80 @@ async function send(mode) {
     sendBtn.disabled = false;
     input.focus();
   }
+}
+
+// Slash commands: typing "/" first lists Claude Code's commands for the folder.
+let slashIndex = 0;
+let slashShown = [];
+
+async function loadCommands() {
+  try {
+    const r = await call("thread_commands", { thread: state.id });
+    state.commands = r.commands ?? [];
+    state.commandsKnown = r.known;
+  } catch {
+    state.commands = [{ name: "compact", description: "Summarize the conversation so far, to free up context", argumentHint: "" }];
+  }
+}
+
+function renderSlash() {
+  const el = $("slash");
+  const m = /^\/([\w:.-]*)$/.exec(input.value);
+  if (!m) {
+    el.hidden = true;
+    slashShown = [];
+    return;
+  }
+  if (!state.commands) {
+    void loadCommands().then(renderSlash);
+    return;
+  }
+  const q = m[1].toLowerCase();
+  slashShown = state.commands.filter((c) => c.name.toLowerCase().startsWith(q))
+    .concat(state.commands.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q)))
+    .slice(0, 50);
+  if (!slashShown.length) {
+    el.hidden = true;
+    return;
+  }
+  slashIndex = Math.min(slashIndex, slashShown.length - 1);
+  el.replaceChildren(...slashShown.map((c, i) => {
+    const row = h("button", { class: `slash-row${i === slashIndex ? " on" : ""}` }, h("span", { class: "name" }, `/${c.name}`),
+      c.argumentHint ? h("span", { class: "hint" }, c.argumentHint) : null, h("span", { class: "desc" }, c.description));
+    row.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      pickSlash(c);
+    });
+    return row;
+  }));
+  el.hidden = false;
+  el.querySelector(".on")?.scrollIntoView({ block: "nearest" });
+}
+
+function pickSlash(c) {
+  input.value = `/${c.name} `;
+  slashIndex = 0;
+  renderSlash();
+  autosize();
+  saveDraft();
+  input.focus();
+}
+
+function slashKey(ev) {
+  if ($("slash").hidden || !slashShown.length) return false;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    slashIndex = (slashIndex + (ev.key === "ArrowDown" ? 1 : -1) + slashShown.length) % slashShown.length;
+    renderSlash();
+  } else if (ev.key === "Tab" || (ev.key === "Enter" && !ev.shiftKey)) {
+    // A full name typed already: Enter sends it.
+    const c = slashShown[slashIndex];
+    if (ev.key === "Enter" && input.value === `/${c.name}`) return false;
+    pickSlash(c);
+  } else if (ev.key === "Escape") {
+    $("slash").hidden = true;
+  } else return false;
+  ev.preventDefault();
+  return true;
 }
 
 $("attach").addEventListener("click", () => $("file").click());
@@ -741,6 +1282,7 @@ async function addFiles(files) {
     state.attachments.push(await readImage(f));
   }
   renderAttachments();
+  saveDraft();
   input.focus();
 }
 
@@ -752,12 +1294,38 @@ function renderAttachments() {
       del.addEventListener("click", () => {
         state.attachments.splice(i, 1);
         renderAttachments();
+        saveDraft();
       });
       return h("div", { class: "att" }, h("img", { src: a.url, alt: a.name }), del);
     }),
   );
   el.hidden = !state.attachments.length;
 }
+
+// ------------------------------------------------------------------ drafts
+
+function saveDraft() {
+  drafts.save(state.id, {
+    text: input.value,
+    images: state.attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name })),
+    picks: hasPicks(state.picks.picked) ? { replyId: state.picks.replyId, picked: state.picks.picked } : null,
+    answers: state.answers,
+  });
+}
+
+async function loadDraft() {
+  const d = await drafts.load(state.id).catch(() => null);
+  if (!d) return;
+  input.value = d.text ?? "";
+  state.attachments = (d.images ?? []).filter((i) => i?.data).map((i) => ({ ...i, url: `data:${i.mediaType};base64,${i.data}` }));
+  if (d.picks?.replyId) state.picks = { replyId: d.picks.replyId, picked: d.picks.picked ?? {} };
+  state.answers = d.answers && typeof d.answers === "object" ? d.answers : {};
+  renderAttachments();
+  autosize();
+}
+
+window.addEventListener("pagehide", () => void drafts.flush());
+document.addEventListener("visibilitychange", () => document.hidden && void drafts.flush());
 
 // ------------------------------------------------------------------ helpers
 
@@ -777,6 +1345,7 @@ function showImage(src) {
   box.onclick = () => (box.hidden = true);
 }
 
+
 // ------------------------------------------------------------------ start (last, so every binding above exists)
 
 call("models_list")
@@ -785,5 +1354,15 @@ call("models_list")
     renderPickers();
   })
   .catch(() => {});
+await loadDraft();
+// The draft's picks belong to a reply: kept only if that reply is still the latest (setLatest drops them otherwise).
+const draftPicks = state.picks;
+state.picks = { replyId: null, picked: {} };
 await loadTranscript();
+if (draftPicks.replyId && state.latest?.entry.id === draftPicks.replyId) {
+  state.picks = draftPicks;
+  renderLatest();
+}
+void refreshTask();
+void loadChanges();
 input.focus();
