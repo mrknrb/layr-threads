@@ -292,8 +292,13 @@ ${read}
   \`<link rel="stylesheet" href="/_layr/layr.css">\`, waits for \`await layr.ready\`, and keeps data with
   \`layr.data.get/set/list\` or \`layr.db.*\`. Use the CSS variables (--bg, --fg, --accent, --border...).
 - No internet libraries at runtime: copy any library into the folder. Network access needs "network:<origin>".
-- Heavy work (Python, files on the PC) goes in a backend (\`"backend": { "kind": "process", ... }\`, an MCP server on
-  stdio); only when the plugin really needs one.
+- Prefer a plugin without a backend: panels, its own data, "network:<origin>", "files" (files the person opens with
+  it) and other plugins' tools ("plugins:<id>") cover most plugins, and layr keeps such a plugin in its sandbox.
+- A backend (\`"backend": { "kind": "process", ... }\`, an MCP server on stdio, or the "pc" permission) has full access
+  to the PC: add one only when the plugin really must run programs or reach files on the PC (Python, a CLI tool).
+  A plugin with full access that isn't from a verified publisher, as every plugin made or changed here is, runs only
+  in developer mode (Settings > Developer mode). When you add one, tell the person why it needs full access, and that
+  it runs once they turn developer mode on.
 ${extensionPart}
 
 ${breaks}

@@ -108,6 +108,8 @@ check(pNew.includes("http://127.0.0.1:4300/_layr/layr-page.js") && pNew.includes
   "content scripts: layr-page.js before their own script");
 check(pNew.includes("layr.expect(") && pNew.includes("layr.problem(") && pNew.includes("Never weaken or delete")
   && pNew.includes('"check": "check.mjs"'), "prompt asks for expect, problem and a check script");
+check(pNew.includes("Prefer a plugin without a backend") && pNew.includes("developer mode"),
+  "prefers sandboxed plugins, names developer mode");
 const pStore = targetSystemPrompt({ ...store, name: "Notes" });
 check(pStore.includes("own copy") && !pStore.includes("packages_link") && !pStore.includes("Chrome extension"),
   "store copy prompt");
