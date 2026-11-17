@@ -21,6 +21,8 @@ const port = Number(arg("port", 4310));
 const dataDir = path.resolve(arg("data", path.join(os.tmpdir(), "layr-claude-dev")));
 
 const hub = await startFakeHub();
+// --repos <file.json>: what layr__plugin_repos answers (threads on plugins and extensions), e.g. [{id, name, kind, path}].
+if (arg("repos")) hub.repos.push(...JSON.parse(readFileSync(path.resolve(arg("repos")), "utf8")));
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(pluginDir, "backend", "server.js")],

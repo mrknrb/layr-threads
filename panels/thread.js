@@ -799,6 +799,12 @@ function setThread(t) {
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
   wsEl.title = ws.path ?? "";
+  // A thread on a plugin or an extension (0.3.2) says which, instead of the folder.
+  if (t.target?.plugin) {
+    const ext = t.target.kind === "extension";
+    wsEl.replaceChildren(icon(ext ? "puzzle" : "box", 12), t.target.plugin);
+    wsEl.title = `${ext ? "Chrome extension" : "layr plugin"} ${t.target.plugin} · ${ws.path ?? ""}`;
+  }
   $("cost").textContent = t.costUsd ? money(t.costUsd) : "";
   renderContext(t);
   for (const id of t.pendingApprovals ?? []) state.pending.add(id);
@@ -983,6 +989,13 @@ function threadMenu(ev) {
     state.phone ? null : { label: "Open folder in File Explorer", icon: "folder_open", run: () => openFolderOnPc(state.id, "explorer") },
     state.phone ? null : "-",
     state.task === null && !t.archived ? { label: "+ Pipeline", icon: "view_kanban", run: () => adoptThread(state.id).then(() => refreshTask()) } : null,
+    t.target?.plugin && t.target.place !== "inside"
+      ? { label: "History and undo (My plugins)", icon: "history", run: () => layr.panels.open("main", { plugin: t.target.plugin }, { plugin: "devtools" }).catch((e) => notify(e.message, "error")) }
+      : null,
+    t.target?.kind === "extension"
+      ? { label: "Reload the extension", icon: "refresh", run: () => layr.tools.call("extension_reload", { plugin: t.target.plugin }, { plugin: "layr" })
+          .then(() => notify("Extension reloaded", "success"), (e) => notify(e.message, "error")) }
+      : null,
     { label: "Rename", icon: "edit", run: startRename },
     { label: t.archived ? "Bring back" : "Archive", icon: t.archived ? "unarchive" : "archive", run: async () => {
       const r = await call("thread_archive", { thread: state.id, archived: !t.archived }).catch((e) => notify(e.message, "error"));

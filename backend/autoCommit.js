@@ -79,10 +79,14 @@ export async function autoCommit(dir, { prompt, reply, author = CLAUDE_AUTHOR } 
   return { commit, subject, files: status ? status.split(/\r?\n/).length : 0, top };
 }
 
-/** A new plugin folder becomes a repository with an empty first commit, so Claude's first turn is history. */
+/**
+ * A new plugin folder becomes a repository whose first commit holds what is there already (an extension's template,
+ * else nothing), so Claude's first turn is history.
+ */
 export async function initPluginRepo(folder, id) {
   if (existsSync(path.join(folder, ".git"))) return false;
   await git(folder, ["init", "-q", "--initial-branch=main"]);
+  await git(folder, ["add", "-A"]);
   await git(folder, [...identityArgs(LAYR_AUTHOR), "commit", "-q", "--allow-empty", "--no-verify", "-m", `New plugin ${id}`]);
   return true;
 }

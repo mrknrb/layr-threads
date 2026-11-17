@@ -76,7 +76,7 @@
       if (m.type === "notify") { const t = document.getElementById("toast"); t.textContent = m.text; t.style.display = "block"; t.style.background = m.kind === "error" ? "#a33" : "#333"; setTimeout(() => (t.style.display = "none"), 3500); }
     });
     document.getElementById("theme").onclick = () => { const p = new URLSearchParams(location.search); p.set("theme", theme === "dark" ? "light" : "dark"); location.search = p; };
-    document.getElementById("np").onclick = () => open("new-plugin", {});
+    document.getElementById("np").onclick = () => open("threads", { new: true, target: "plugin", plugin: "new" });
     if (params.get("open")) open("thread", { thread: params.get("open") });
     if (params.get("openPanel")) open(params.get("openPanel"), {});
     window.__open = open;

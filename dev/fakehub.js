@@ -19,6 +19,9 @@ export async function startFakeHub({ port = 0, pluginToken = "plugin-token" } = 
   const opened = [];
   const agentTokens = new Set();
   const calls = [];
+  /** What layr__plugin_repos answers (tests fill it); extensions reloaded. */
+  const repos = [];
+  const reloaded = [];
 
   function makeServer(who) {
     const server = new McpServer({ name: "layr-fake-hub", version: "0.0.1" });
@@ -58,6 +61,19 @@ export async function startFakeHub({ port = 0, pluginToken = "plugin-token" } = 
         agentTokens.add(token);
         return { token };
       });
+      // My plugins' git tools, as far as threads on a plugin use them (claude 0.3.2).
+      t("layr__plugin_repos", {}, () => ({ git: true, plugins: repos }));
+      t("layr__plugin_edit", { plugin: z.string() }, ({ plugin }) => {
+        const r = repos.find((p) => p.id === plugin);
+        if (!r) throw new Error(`no plugin ${plugin}`);
+        return { path: r.path, branch: "mine" };
+      });
+      t("layr__extension_reload", { plugin: z.string() }, ({ plugin }) => {
+        reloaded.push(plugin);
+        return { plugin, path: plugin };
+      });
+      t("layr__extension_logs", { plugin: z.string(), after: z.number().optional(), limit: z.number().optional(),
+        level: z.string().optional() }, () => ({ entries: [], more: false, connected: false, tools: [] }));
       t("layr__packages_link", { path: z.string() }, ({ path }) => {
         linked.push(path);
         return { id: path.split(/[\\/]/).pop(), name: path.split(/[\\/]/).pop(), version: "0.1.0-dev", linked: true, path };
@@ -118,6 +134,8 @@ export async function startFakeHub({ port = 0, pluginToken = "plugin-token" } = 
     notifications,
     opened,
     calls,
+    repos,
+    reloaded,
     close: () =>
       new Promise((resolve) => {
         for (const t of sessions.values()) t.close().catch(() => {});

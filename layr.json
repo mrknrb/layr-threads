@@ -1,8 +1,8 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.3.1",
-  "description": "Claude Code threads in your projects and worktrees, with approvals, live streaming, and plugins made with AI.",
+  "version": "0.3.2",
+  "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions, with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
   "icon": "smart_toy",
@@ -16,19 +16,21 @@
   ],
   "panels": [
     { "id": "threads", "title": "Claude threads", "page": "panels/threads.html", "icon": "forum", "single": true },
-    { "id": "thread", "title": "Claude thread", "page": "panels/thread.html", "icon": "chat" },
-    { "id": "new-plugin", "title": "Make a plugin with AI", "page": "panels/new-plugin.html", "icon": "auto_fix_high",
-      "single": true }
+    { "id": "thread", "title": "Claude thread", "page": "panels/thread.html", "icon": "chat" }
   ],
   "commands": [
     { "id": "threads", "title": "Claude threads", "panel": "threads" },
     { "id": "new-thread", "title": "New Claude thread", "panel": "threads", "params": { "new": true } },
-    { "id": "make-plugin", "title": "Make a plugin with AI", "panel": "new-plugin" }
+    { "id": "make-plugin", "title": "New plugin with Claude", "panel": "threads",
+      "params": { "new": true, "target": "plugin", "plugin": "new" } },
+    { "id": "new-extension", "title": "New Chrome extension with Claude", "panel": "threads",
+      "params": { "new": true, "target": "extension", "plugin": "new" } }
   ],
   "menus": [
     { "menu": "Claude", "command": "new-thread", "group": "1" },
     { "menu": "Claude", "command": "threads", "group": "1" },
     { "menu": "Claude", "command": "make-plugin", "group": "2" },
+    { "menu": "Claude", "command": "new-extension", "group": "2" },
     { "menu": "Tools", "command": "make-plugin", "group": "9" }
   ],
   "keybindings": [ { "key": "ctrl+alt+t", "command": "threads" } ],
@@ -47,7 +49,7 @@
     "groups": [
       { "id": "read", "label": "See projects, threads' status, models and usage",
         "tools": ["projects_list", "worktrees_list", "thread_list", "thread_status", "thread_wait", "approvals_list",
-                  "models_list", "usage", "plugins_folder", "thread_changes", "thread_commands"],
+                  "models_list", "usage", "plugins_folder", "thread_changes", "thread_commands", "targets_list"],
         "defaults": { "plugins": "allow" } },
       { "id": "conversations", "label": "Read what threads say",
         "tools": ["thread_read", "thread_transcript", "attachment_read", "thread_diff"],

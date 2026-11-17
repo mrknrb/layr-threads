@@ -4,6 +4,17 @@
 .search .icon { position: absolute; left: 9px; top: 8px; color: var(--fg-dim); }
 #search { width: 100%; padding-left: 30px; }
 
+#modes { margin: 0 10px 4px; flex: none; }
+.project-head .place { font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 10.5px; padding: 0 6px;
+  border-radius: 8px; background: var(--bg-3); color: var(--fg-dim); flex: none; }
+.project-head .place.made { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; }
+.examples .chip { border: 1px solid var(--border); background: var(--bg); border-radius: 14px; padding: 3px 10px;
+  font-size: 12px; cursor: pointer; color: var(--fg-dim); text-align: left; }
+.examples .chip:hover { color: var(--fg); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+.target-note { font-size: 12px; color: var(--fg-dim); }
+.empty .btn + .btn { margin-left: 6px; }
+
 #list { flex: 1; overflow-y: auto; padding: 0 6px 10px; }
 .project { margin-top: 8px; }
 .project-head {

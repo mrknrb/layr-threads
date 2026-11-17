@@ -9,15 +9,16 @@ import path from "node:path";
 import { z } from "zod";
 import { Account } from "./account.js";
 import { ASK_DEFAULT_MODEL, ask } from "./ask.js";
-import { autoCommit, initPluginRepo, lastPrompt } from "./autoCommit.js";
+import { autoCommit, lastPrompt } from "./autoCommit.js";
 import { fileDiff, threadChanges } from "./changes.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
 import { Hub } from "./hub.js";
-import { linkIfReady, newPluginFolder, pluginSystemPrompt, pluginsRoot } from "./pluginMaker.js";
+import { linkIfReady, pluginsRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
+import { isPluginsRoot, listTargets, readManifest, resolveTarget, TARGET_KINDS, targetSystemPrompt } from "./targets.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
-import { errorMessage, isDirectory, log, truncate } from "./util.js";
+import { errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
 
 /** Slash commands every Claude Code session has, shown before it has listed its own. */
 const BUILTIN_COMMANDS = [
@@ -35,13 +36,42 @@ const account = new Account({
 const engine = new Engine({ store, hub, account });
 
 // After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
-// plugin-maker threads link their folder into layr.
+// threads on a plugin link a plugin they made into layr and reload its Chrome extension, if it brings one.
 engine.onTurnEnded = (meta, status) => {
   if (status !== "done") return;
   void commitTurn(meta).finally(() => {
-    if (meta.kind === "plugin") linkPluginFolder(meta);
+    if (meta.kind === "plugin") void afterPluginTurn(meta);
   });
 };
+
+async function afterPluginTurn(meta) {
+  // Your own plugins (and the old plugin maker's threads) are linked again, so manifest changes show; a store
+  // plugin's copy (`mine`) and plugins inside a bigger repository are linked already.
+  const place = meta.extra?.place ?? "made";
+  const info = place === "made" ? await linkPluginFolder(meta) : null;
+  const manifest = readManifest(meta.cwd);
+  const plugin = manifest?.id ?? info?.id ?? meta.extra?.pluginId;
+  if (!manifest?.extension || !plugin || !hub.available) return;
+  try {
+    const before = await hub.call("layr__extension_logs", { plugin, limit: 1 }).catch(() => null);
+    await hub.call("layr__extension_reload", { plugin });
+    let text = "Reloaded the Chrome extension in layr's web panels";
+    // Errors it logged right after the reload (a broken service worker, a load error) are said in the thread.
+    if (before) {
+      await new Promise((r) => setTimeout(r, Number(process.env.LAYR_CLAUDE_EXTENSION_SETTLE_MS ?? 4000)));
+      const after = before.entries?.at(-1)?.seq ?? 0;
+      const logs = await hub.call("layr__extension_logs", { plugin, after, level: "error", limit: 5 }).catch(() => null);
+      const errors = logs?.entries ?? [];
+      if (errors.length) {
+        text += `; it reported ${errors.length} error(s): ${errors.map((e) => truncate(e.text.split("\n")[0], 160)).join(" · ")}`;
+      } else if (logs && !logs.connected) text += "; it isn't connected to layr (yet)";
+    }
+    const entry = store.append(meta.id, { type: "system", text });
+    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+  } catch (error) {
+    log(`reloading ${plugin}'s extension failed:`, errorMessage(error));
+  }
+}
 
 async function commitTurn(meta) {
   if (process.env.LAYR_CLAUDE_AUTOCOMMIT === "0" || !meta.cwd) return;
@@ -58,9 +88,9 @@ async function commitTurn(meta) {
 }
 
 function linkPluginFolder(meta) {
-  linkIfReady(hub, meta.cwd)
+  return linkIfReady(hub, meta.cwd)
     .then((info) => {
-      if (!info) return;
+      if (!info) return null;
       const first = !meta.extra?.linked;
       store.updateThread(meta.id, { extra: { ...(meta.extra ?? {}), linked: true, pluginId: info.id ?? meta.extra?.pluginId } });
       if (first) {
@@ -68,11 +98,15 @@ function linkPluginFolder(meta) {
         hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
         hub.notify(`New plugin: ${info.name ?? info.id}`, "success");
       }
+      return info;
     })
-    .catch((error) => log(`linking ${meta.cwd} failed:`, errorMessage(error)));
+    .catch((error) => {
+      log(`linking ${meta.cwd} failed:`, errorMessage(error));
+      return null;
+    });
 }
 
-const server = new McpServer({ name: "claude", version: "0.3.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.3.2" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -99,9 +133,11 @@ const threadId = z.string().describe("Thread id (thread_list)");
 
 // ------------------------------------------------------------------ projects
 
-tool("projects_list", "The project folders Claude threads work in, with their default model, effort and permission mode.", {}, () => ({
+tool("projects_list", "The project folders Claude threads work in, with their default model, effort and permission " +
+  "mode. `kind`: project, or plugin (a plugin's own folder, for threads on a plugin: thread_start's target).", {}, () => ({
   projects: store.projects.map((p) => ({
     ...p,
+    kind: p.kind ?? (isPluginsRoot(p.path) ? "plugin" : "project"),
     exists: isDirectory(p.path),
     threads: Object.values(store.threads).filter((t) => t.projectId === p.id && !t.archived).length,
   })),
@@ -162,7 +198,15 @@ tool(
   "Start a Claude Code thread in a project with a first prompt. Gives the thread (its id for the other tools). " +
     "The turn runs on; follow it with thread_wait or the claude:thread.<id> events.",
   {
-    project: z.string().describe("Project id, name or folder (a folder that isn't a project yet is added)"),
+    project: z.string().optional().describe("Project id, name or folder (a folder that isn't a project yet is added); not with target"),
+    target: z
+      .object({
+        kind: z.enum(TARGET_KINDS).describe("plugin, or extension (a plugin that brings a Chrome extension)"),
+        plugin: z.string().optional().describe("An installed plugin's id (targets_list); a store plugin gets your own copy first. Leave out to make a new one"),
+        name: z.string().optional().describe("A new one's name"),
+      })
+      .optional()
+      .describe("Work on a layr plugin or Chrome extension instead of a project: the thread runs in its folder and knows how layr plugins work"),
     prompt: z.string(),
     model: z.string().optional().describe("opus, sonnet, haiku, or an id from models_list (default: the project's)"),
     effort: effort.optional(),
@@ -185,7 +229,54 @@ tool(
     title: z.string().optional(),
     images: images.optional(),
   },
-  (a) => engine.startThread(a).then((thread) => ({ thread })),
+  async (a) => {
+    if (a.target) return startOnTarget(a);
+    if (!a.project) throw new Error("Which project? Give project (projects_list), or a target (targets_list)");
+    return engine.startThread(a).then((thread) => ({ thread }));
+  },
+);
+
+/** thread_start with a target: its folder (made, or your copy of a store plugin), a project for it, the system prompt. */
+async function startOnTarget(a) {
+  const t = await resolveTarget(hub, { ...a.target, description: a.target.plugin ? undefined : a.prompt });
+  const project = store.addProject({ path: t.folder, name: t.name, kind: "plugin", pluginId: t.id });
+  hub.emit("claude:threads", { kind: "projects" });
+  const prompt = t.isNew
+    ? `${a.target.name ? `Name: ${a.target.name}\n\n` : ""}Please make this ${t.extension ? "Chrome extension (as a layr plugin)" : "layr plugin"} for me:\n\n${a.prompt}`
+    : a.prompt;
+  const thread = await engine.startThread({
+    ...a,
+    project: project.id,
+    prompt,
+    // The title comes from what the person asked, not from the wrapped first prompt.
+    title: a.title || titleFromPrompt(a.prompt),
+    permissionMode: a.permissionMode || (t.isNew ? "acceptEdits" : undefined),
+    workspace: { path: t.folder },
+    branch: undefined,
+    baseRef: undefined,
+    kind: "plugin",
+    systemAppend: targetSystemPrompt({ ...t, hubUrl: hub.url }),
+    extra: { pluginId: t.id, folder: t.folder, target: t.kind, place: t.place, isNew: t.isNew },
+  });
+  return { thread, folder: t.folder, pluginId: t.id, place: t.place, isNew: t.isNew };
+}
+
+tool(
+  "targets_list",
+  "What threads can work on besides projects: every installed layr plugin, with `place` (made: yours, its own " +
+    "repository; changed: a store plugin with your changes; store: as it came; inside: linked from a bigger " +
+    "repository), `extension` (it brings a Chrome extension), its folder and how many threads it has.",
+  {},
+  async () => {
+    const { targets, git, error } = await listTargets(hub);
+    const counts = new Map();
+    for (const t of Object.values(store.threads)) {
+      if (t.kind !== "plugin" || t.archived) continue;
+      const id = t.extra?.pluginId;
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return { targets: targets.map((t) => ({ ...t, threads: counts.get(t.id) ?? 0 })), git, error };
+  },
 );
 
 tool(
@@ -423,7 +514,8 @@ tool(
 tool(
   "plugin_make",
   "Make a layr plugin with AI from a plain-words description: starts a thread in a new folder under " +
-    "~/layr-plugins that writes it and links it into layr. Gives the thread and the folder.",
+    "~/layr-plugins that writes it and links it into layr. Gives the thread and the folder. (thread_start with " +
+    "target {kind: plugin} does the same and more.)",
   {
     description: z.string().describe("What the plugin should do, in plain words"),
     name: z.string().optional(),
@@ -433,24 +525,15 @@ tool(
     images: images.optional(),
   },
   async (a) => {
-    const { id, folder, root } = newPluginFolder(a);
-    // Its history starts now (a repository with an empty first commit); Claude's turns are saved into it.
-    await initPluginRepo(folder, id).catch((error) => log(`git init in ${folder} failed:`, errorMessage(error)));
-    const project = store.addProject({ path: root, name: "My layr plugins" });
-    const prompt = `${a.name ? `Name: ${a.name}\n\n` : ""}Please make this layr plugin for me:\n\n${a.description}`;
-    const thread = await engine.startThread({
-      project: project.id,
-      prompt,
+    const r = await startOnTarget({
+      target: { kind: "plugin", name: a.name, id: a.id },
+      prompt: a.description,
       images: a.images,
       model: a.model,
-      permissionMode: a.permissionMode || "acceptEdits",
-      workspace: { path: folder },
+      permissionMode: a.permissionMode,
       title: `Plugin: ${a.name || truncate(a.description, 40)}`,
-      kind: "plugin",
-      systemAppend: pluginSystemPrompt({ id, folder }),
-      extra: { pluginId: id, folder },
     });
-    return { thread, folder, pluginId: id };
+    return { thread: r.thread, folder: r.folder, pluginId: r.pluginId };
   },
 );
 

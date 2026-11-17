@@ -447,6 +447,11 @@ export class Engine {
       projectId: meta.projectId,
       title: meta.title,
       kind: meta.kind,
+      // 0.3.2: what a plugin thread works on (thread_start's target), null for project threads.
+      target:
+        meta.kind === "plugin"
+          ? { kind: meta.extra?.target ?? "plugin", plugin: meta.extra?.pluginId ?? null, place: meta.extra?.place ?? "made" }
+          : null,
       status: meta.status,
       live: Boolean(live),
       cwd: meta.cwd,

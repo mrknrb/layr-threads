@@ -38,9 +38,16 @@ export class Store {
     );
   }
 
-  addProject({ path: dir, name, defaultModel, defaultEffort, defaultPermissionMode }) {
+  /** `kind: "plugin"` (with `pluginId`): a plugin's own folder, shown under Plugins, not Projects. */
+  addProject({ path: dir, name, defaultModel, defaultEffort, defaultPermissionMode, kind, pluginId }) {
     const existing = this.findProject(dir);
-    if (existing) return existing;
+    if (existing) {
+      if (kind && existing.kind !== kind) {
+        Object.assign(existing, { kind, pluginId: pluginId || null });
+        this.saveProjects();
+      }
+      return existing;
+    }
     const project = {
       id: newId("p"),
       name: name || path.basename(path.resolve(dir)) || dir,
@@ -48,6 +55,7 @@ export class Store {
       defaultModel: defaultModel || null,
       defaultEffort: defaultEffort || null,
       defaultPermissionMode: defaultPermissionMode || null,
+      ...(kind ? { kind, pluginId: pluginId || null } : {}),
       createdAt: nowIso(),
     };
     this.projects.push(project);
