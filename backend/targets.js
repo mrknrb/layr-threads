@@ -126,21 +126,32 @@ function titleCase(id) {
   return String(id).replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
 }
 
-/** layr-ext.js: from the running core (the hub's address), else from layr's repository when this runs from it. */
-export async function extensionSdk(hub) {
+/** One of the core's SDK files (`/_layr/<name>`): from the running core (the hub's address), else from layr's
+ * repository when this runs from it; null when neither has it (an older core). `marker`: text the real file has. */
+async function coreAsset(hub, name, marker) {
   if (hub?.url) {
     try {
-      const res = await fetch(new URL("/_layr/layr-ext.js", hub.url), { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(new URL(`/_layr/${name}`, hub.url), { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const text = await res.text();
-        if (text.includes("layr-ext")) return text;
+        if (text.includes(marker)) return text;
       }
     } catch {
       // an older core, or none: try the repository
     }
   }
-  const file = path.resolve(here, "..", "..", "..", "core", "layr_core", "assets", "layr-ext.js");
+  const file = path.resolve(here, "..", "..", "..", "core", "layr_core", "assets", name);
   return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+
+/** layr-ext.js, for an extension's service worker and pages. */
+export function extensionSdk(hub) {
+  return coreAsset(hub, "layr-ext.js", "layr-ext");
+}
+
+/** layr-page.js, for an extension's content scripts (`layr.expect` / `layr.problem`); null from an older core. */
+export function pageSdk(hub) {
+  return coreAsset(hub, "layr-page.js", "expect");
 }
 
 /** A new extension plugin: layr.json with `extension`, a Manifest V3 extension whose service worker connects to layr. */
@@ -186,10 +197,12 @@ layr.tools.serve({
 });
 `,
   );
-  const sdk = await extensionSdk(hub);
+  const [sdk, page] = await Promise.all([extensionSdk(hub), pageSdk(hub)]);
   if (sdk) writeFileSync(path.join(ext, "layr-ext.js"), sdk);
   else log("layr-ext.js wasn't found (no core, no repository): the extension's thread is told to fetch it");
-  return { folder, extension: ext, sdk: Boolean(sdk) };
+  // For content scripts (the template has none yet: the thread lists it before its own script when it adds one).
+  if (page) writeFileSync(path.join(ext, "layr-page.js"), page);
+  return { folder, extension: ext, sdk: Boolean(sdk), pageSdk: Boolean(page) };
 }
 
 /** The system prompt of a thread on a plugin or an extension. */
@@ -216,6 +229,7 @@ plain words; ask only about what the person wants, not how to build it.`;
     changed: "This is the person's own copy of a plugin from the store (git branch `mine`): layr runs it from this folder and saves your changes as a version after each turn (My plugins > History, with undo), so don't commit yourself. Store updates are merged into it later: keep changes focused, and keep the id.",
     inside: "This plugin lives inside a bigger git repository: layr doesn't save versions here by itself. Commit only if the person asks, as that repository's own instructions (CLAUDE.md) say.",
   }[place] ?? "";
+  const pageUrl = hubUrl ? `${new URL("/_layr/layr-page.js", hubUrl)}` : "the core's /_layr/layr-page.js";
   const extensionPart = extension
     ? `
 ## The Chrome extension
@@ -229,13 +243,28 @@ the middle of a turn, call \`mcp__layr__layr__extension_reload\` with { "plugin"
 - \`layr.tools.serve({ name: { description, inputSchema, run: async (args) => value } })\` gives agents and plugins
   tools that run in the browser, as \`${id}__<name>\` (for you: \`mcp__layr__${id}__<name>\`, once the extension is
   loaded and connected; a new tool may show from your next turn). Use them to test what you built.
-- Content scripts can't reach layr themselves: they message the service worker (chrome.runtime.sendMessage).
+- Content scripts can't reach layr themselves: they message the service worker (chrome.runtime.sendMessage). Only
+  \`layr-page.js\` (in the folder; else copy it from ${pageUrl}, don't edit it) gives them
+  \`layr.expect\` / \`layr.problem\`, sent through the service worker: list it before their own script in
+  manifest.json's \`content_scripts[].js\`.
 - What the extension logs (console.*, uncaught errors, also \`chrome.runtime.sendMessage({__layrLog: [{level, text}]})\`
   from content scripts) and layr's own errors loading it reach layr: read them with
   \`mcp__layr__layr__extension_logs\` { "plugin": "${id}", "level"?: "error", "after"?: <last seq you saw> }, which
   also says whether it is connected and which tools it serves. Check it after a reload instead of guessing.
 - Keep versions in step: layr.json "version" and the extension manifest's "version".`
     : "";
+  const where = extension
+    ? "`layr-page.js` in content scripts, `layr-ext.js` in the service worker and extension pages, `layr.js` in panels"
+    : "`layr.js` in panels; a backend reports with the hub tool `layr__problem_report { id, ok?, details? }`";
+  const breaks = `## Noticing when it breaks
+Nobody tests this plugin later, and sites and services change under it, so it reports its own breaks and layr offers
+a fix${docs ? ` (${path.basename(docs.architecture)} › Problems)` : ""}:
+- Wherever the code depends on a web page's structure or an outside service, check it right at that spot:
+  \`await layr.expect("<id>", selectorOrFn, { min, label })\`; for other failures (data that doesn't parse, a click
+  that did nothing) \`layr.problem("<id>", details)\`. They come from ${where}.
+- Ids stable and descriptive ("feed-videos"). Never weaken or delete an existing expect just to make it pass.
+- When the plugin has logic worth testing, keep a small self-test: layr.json \`"check": "check.mjs"\`, run in the
+  plugin's folder, exit code 0 passes; it tests the plugin's own logic without layr running and installs nothing.`;
   const done = isNew
     ? `## When you are done
 1. Check that layr.json${extension ? " and extension/manifest.json are" : " is"} valid JSON and every file named exists.
@@ -266,6 +295,8 @@ ${read}
 - Heavy work (Python, files on the PC) goes in a backend (\`"backend": { "kind": "process", ... }\`, an MCP server on
   stdio); only when the plugin really needs one.
 ${extensionPart}
+
+${breaks}
 
 ${done}`;
 }

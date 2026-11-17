@@ -59,7 +59,7 @@
       { "id": "run", "label": "Start, steer and stop threads; change projects",
         "tools": ["thread_start", "thread_send", "thread_interrupt", "thread_archive", "thread_queue", "project_add",
                   "project_update", "project_remove", "plugin_make"],
-        "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow" } },
+        "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow", "plugin:care": "allow" } },
       { "id": "approve", "label": "Answer threads' permission requests and change their permissions",
         "tools": ["answer_approval", "thread_update"],
         "defaults": { "plugin:pipeline": "allow" } },
