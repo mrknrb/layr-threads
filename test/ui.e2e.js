@@ -203,6 +203,14 @@ try {
   check(calls.some((c) => c.tool === "thread_action" && c.args.action === "land"), "button ran pipeline__thread_action");
   check(calls.some((c) => c.tool === "send" && c.args.number === 42 && /go on/.test(c.args.text) && /I agree/.test(c.args.text)),
     "Send went through pipeline__send with the prefix", JSON.stringify(calls.filter((c) => c.tool === "send")));
+  // 🌙 When Away: the message waits in the pipeline's Ready.
+  check(await t2.locator("#away").isVisible(), "🌙 shows with a pipeline");
+  await t2.locator("#input").fill("tonight please");
+  await t2.locator("#away").click();
+  await page.waitForTimeout(500);
+  const awayCalls = await page.evaluate(() => JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]"));
+  check(awayCalls.some((c) => c.tool === "send" && c.args.number === 42 && c.args.whenAway === true && /tonight please/.test(c.args.text)),
+    "🌙 sends with whenAway", JSON.stringify(awayCalls.filter((c) => c.tool === "send").at(-1)));
   // The threads list: right-click a row that isn't a task.
   const list = page.frameLocator("#left iframe");
   await list.locator(".row", { hasText: "relay" }).click({ button: "right" });

@@ -851,6 +851,8 @@ function renderWorking() {
   $("stop").hidden = !isBusy;
   $("steer").hidden = !isBusy || !input.value.trim() || Boolean(state.task);
   $("send").textContent = isBusy && !state.task ? "Queue" : "Send";
+  // 🌙 When Away needs the pipeline (state.task is undefined without it).
+  $("away").hidden = state.task === undefined;
   $("hint").textContent = state.task ? "Sent through the pipeline" : isBusy ? "Enter queues · Ctrl+Enter steers" : "";
   clearInterval(workingTimer);
   if (!isBusy) return;
@@ -1246,6 +1248,7 @@ input.addEventListener("keydown", (ev) => {
   }
 });
 $("send").addEventListener("click", () => send("queue"));
+$("away").addEventListener("click", () => send("queue", { away: true }));
 $("steer").addEventListener("click", () => send("steer"));
 $("stop").addEventListener("click", async () => {
   $("stop").disabled = true;
@@ -1259,17 +1262,24 @@ $("stop").addEventListener("click", async () => {
   }
 });
 
-async function send(mode) {
+/** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
+async function send(mode, { away = false } = {}) {
   const typed = input.value;
   const prefix = currentPrefix();
   const text = prefix ? (typed.trim() ? `${prefix}\n\n${typed}` : prefix) : typed;
   if (!text.trim() && !state.attachments.length) return;
   const images = state.attachments.map(({ mediaType, data }) => ({ mediaType, data }));
-  const sendBtn = $("send");
+  const sendBtn = $(away ? "away" : "send");
   sendBtn.disabled = true;
   try {
     let r = null;
-    if (state.task) await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
+    if (away) {
+      const number = state.task?.number ?? (await pipelineCall("act", { action: "adopt", threadId: state.id }))?.number;
+      if (number == null) throw new Error("The thread couldn't become a pipeline task");
+      await pipelineCall("send", { number, text, whenAway: true, ...(images.length ? { images } : {}) });
+      notify("It waits in the pipeline's Ready until you go Away", "success");
+      void refreshTask();
+    } else if (state.task) await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
     else r = await call("thread_send", { thread: state.id, text, images, mode });
     input.value = "";
     state.attachments = [];
