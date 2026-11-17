@@ -18,6 +18,7 @@ import {
   permissionOptions,
   readImage,
   ready,
+  relTime,
   tokens,
 } from "./common.js";
 import { createDraftStore } from "./drafts.js";
@@ -344,7 +345,7 @@ function addEntry(e, { into = main } = {}) {
         if (!e.failedMcp?.length) return null;
         return kept(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
       }
-      return kept(h("div", { class: "sys" }, e.text));
+      return kept(h("div", { class: `sys${e.subtype === "background_lost" ? " warn" : ""}` }, e.text));
     case "error":
       return kept(h("div", { class: "error-box" }, e.message));
     default:
@@ -795,6 +796,7 @@ function setThread(t) {
     refreshApprovals();
   }
   if (prev && busy(prev) && !busy(t)) scheduleChanges();
+  renderBackground(t.background ?? []);
   renderTodos(t.todos ?? []);
   renderQueue(t);
   renderPickers();
@@ -829,6 +831,26 @@ function renderWorking() {
   };
   tick();
   workingTimer = setInterval(tick, 1000);
+}
+
+const BG_KIND = { local_agent: "agent", local_bash: "shell", monitor: "monitor", local_workflow: "workflow" };
+
+/** What the thread's Claude Code runs in the background (subagents, shells, monitors): it keeps the session open. */
+function renderBackground(tasks) {
+  const el = $("background");
+  if (!tasks.length) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+  const wasOpen = el.querySelector("details")?.open ?? false;
+  const items = tasks.map((t) => h("div", { class: "bg-item", title: t.description },
+    h("span", { class: "t" }, t.description || t.id),
+    h("span", { class: "k" }, `${t.agent ?? BG_KIND[t.type] ?? t.type ?? "task"} · ${relTime(t.startedAt)}`)));
+  el.replaceChildren(h("details", { open: wasOpen },
+    h("summary", {}, h("span", { class: "spinner" }), `${tasks.length} running in the background`),
+    h("div", { class: "bg-list" }, items)));
+  el.hidden = false;
 }
 
 function renderTodos(todos) {

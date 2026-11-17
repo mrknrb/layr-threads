@@ -3,7 +3,10 @@
 // One long-lived query per active thread, fed by a streaming input queue, so the user can send more messages
 // (steer into the running turn, or queue for after it), interrupt, and switch model or permission mode while the
 // session stays. A thread idle for a while has its query closed; the next message resumes it by session id, also
-// after the backend restarts.
+// after the backend restarts. A thread with background work (subagents, background shells, Monitor watches) is not
+// idle: closing the query ends the Claude Code process and its background children with it, so it stays open until
+// that work is done. Background work lost anyway (archive, a crash, the backend stopping) is said in the transcript,
+// to the user, and to Claude on the next message.
 //
 // Everything a panel needs goes two ways: appended to the thread's transcript (threads/<id>.jsonl), and emitted
 // as events on `claude:thread.<id>` through the hub. A panel opening later reads the transcript, then follows.
@@ -71,6 +74,7 @@ export class Engine {
   /** Turns that ran when the backend stopped can't go on: say so, and resume the session on the next message. */
   recover() {
     for (const meta of Object.values(this.store.threads)) {
+      if (meta.background?.length) this.backgroundLost(meta, meta.background, "the Claude engine restarted");
       if (meta.status === "running" || meta.status === "waiting" || meta.status === "starting") {
         this.store.append(meta.id, { type: "system", text: "The Claude engine restarted while this turn ran; it stopped." });
         this.store.updateThread(meta.id, { status: "interrupted", pendingApprovals: [] });
@@ -310,8 +314,8 @@ export class Engine {
       this.store.append(id, { type: "system", text: `Settings changed (${said})`, settings: changes });
       this.emitEntry(id, this.lastEntry);
     }
-    // Effort and thinking need a new query: now when idle, after the turn otherwise.
-    if (live?.needsRestart && !live.turnActive) this.closeLive(id, "settings changed");
+    // Effort and thinking need a new query: now when idle, after the turn and its background work otherwise.
+    if (live?.needsRestart && this.canClose(live)) this.closeLive(id, "settings changed");
     this.emitThread(meta);
     return this.summary(meta);
   }
@@ -368,6 +372,7 @@ export class Engine {
       preview: meta.preview,
       error: meta.error,
       todos: meta.todos,
+      background: meta.background ?? [],
       queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at })),
       queuePaused: meta.queuePaused,
       pendingApprovals: meta.pendingApprovals,
@@ -426,7 +431,7 @@ export class Engine {
   async dispatch(meta, { text, images, savedImages }) {
     const message = this.userMessage(meta, { text, images, savedImages });
     let live = this.lives.get(meta.id);
-    if (live?.needsRestart && !live.turnActive) {
+    if (live?.needsRestart && this.canClose(live)) {
       this.closeLive(meta.id, "restart for new settings");
       live = null;
     }
@@ -435,6 +440,7 @@ export class Engine {
     if (!meta.title || meta.title === "New thread") this.store.updateThread(meta.id, { title: titleFromPrompt(text) });
     if (!live) live = await this.openLive(meta);
     this.beginTurn(meta, live);
+    this.tellLostBackground(meta, message.sdk);
     live.input.push(message.sdk);
     this.touch(meta, { preview: preview(text) });
   }
@@ -490,20 +496,91 @@ export class Engine {
     else if (status === "failed") this.notifyUser(meta, `Claude thread failed: ${meta.title}`, "error");
     for (const pending of live.approvals.values()) pending.resolve({ decision: "deny", message: "The turn ended" });
     live.approvals.clear();
-    if (live.needsRestart || live.closed) this.closeLive(meta.id, "after turn");
+    if (live.closed || (live.needsRestart && this.canClose(live))) this.closeLive(meta.id, "after turn");
     this.emitThread(meta);
     this.onTurnEnded?.(meta, status);
     if (!this.dispatchNextQueued(meta)) this.scheduleIdleClose(meta.id);
   }
 
+  /** Close an idle query after a while; not while background work runs (it would die with the process). */
   scheduleIdleClose(id) {
     const live = this.lives.get(id);
     if (!live) return;
     clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+    if (!this.canClose(live)) return;
     live.idleTimer = setTimeout(() => {
-      if (!live.turnActive) this.closeLive(id, "idle");
+      if (this.canClose(live)) this.closeLive(id, "idle");
     }, IDLE_CLOSE_MS);
     live.idleTimer.unref?.();
+  }
+
+  /** No turn and no background work: closing the query loses nothing. */
+  canClose(live) {
+    return !live.turnActive && !live.background.size;
+  }
+
+  /**
+   * Claude Code's full set of live background tasks (the SDK's `background_tasks_changed`, a level signal: replace,
+   * don't pair edges). Ambient ones (housekeeping watchers) are not work and don't keep the query open.
+   */
+  setBackground(meta, live, tasks) {
+    if (live.closed || this.lives.get(meta.id) !== live) return; // a query closed or replaced already
+    const before = live.background;
+    const next = new Map();
+    for (const t of tasks ?? []) {
+      if (!t?.task_id || t.ambient) continue;
+      next.set(t.task_id, {
+        id: t.task_id,
+        type: t.task_type ?? null,
+        ...(t.subagent_type ? { agent: t.subagent_type } : {}),
+        description: String(t.description ?? ""),
+        startedAt: before.get(t.task_id)?.startedAt ?? nowIso(),
+      });
+    }
+    const same = next.size === before.size &&
+      [...next.values()].every((t) => before.get(t.id)?.description === t.description);
+    live.background = next;
+    for (const t of next.values()) live.seenTasks.set(t.id, t);
+    if (same) return;
+    this.store.updateThread(meta.id, { background: [...next.values()] });
+    if (next.size) {
+      clearTimeout(live.idleTimer);
+      live.idleTimer = null;
+    } else if (!live.turnActive) {
+      if (live.needsRestart) this.closeLive(meta.id, "settings changed");
+      else this.scheduleIdleClose(meta.id);
+    }
+    this.emitThread(meta);
+  }
+
+  /** Background tasks died with the Claude Code process: say so now, and to Claude with the next message. */
+  backgroundLost(meta, tasks, why) {
+    if (!tasks?.length) return;
+    const n = tasks.length;
+    const names = tasks.map((t) => t.description || t.type || t.id);
+    const text = `${n} background task${n > 1 ? "s" : ""} stopped unfinished (${why}): ${names.join("; ")}`;
+    this.store.append(meta.id, { type: "system", subtype: "background_lost", text, tasks });
+    this.emitEntry(meta.id, this.lastEntry);
+    const lost = [...(meta.lostBackground ?? []), ...tasks.map((t) => ({ ...t, why, at: nowIso() }))].slice(-50);
+    this.store.updateThread(meta.id, { background: [], lostBackground: lost });
+    this.notifyUser(meta, `${n} background task${n > 1 ? "s" : ""} of "${meta.title}" stopped unfinished`, "error");
+    this.emitThread(meta);
+  }
+
+  /** The next message tells Claude which of its background tasks were stopped, so it needn't guess. */
+  tellLostBackground(meta, sdk) {
+    const lost = meta.lostBackground;
+    if (!lost?.length) return;
+    this.store.updateThread(meta.id, { lostBackground: [] });
+    const lines = lost.map((t) => `- ${t.description || t.id} (${t.type ?? "task"} ${t.id}; ${t.why}, ${t.at})`);
+    const note =
+      "[layr: these background tasks of yours were stopped before they finished, when the Claude Code process " +
+      "closed; they will not report back. Check what they left (commits, files) before relying on their work.\n" +
+      `${lines.join("\n")}]\n\n`;
+    const content = sdk.message.content;
+    if (typeof content === "string") sdk.message.content = note + content;
+    else sdk.message.content = [{ type: "text", text: note.trim() }, ...content];
   }
 
   fail(meta, error) {
@@ -550,6 +627,10 @@ export class Engine {
       needsRestart: false,
       closed: false,
       idleTimer: null,
+      /** task id → the background task: a new process has none (the SDK's level is per process). */
+      background: new Map(),
+      /** every background task this process had, for naming the ones that finish */
+      seenTasks: new Map(),
       sawInit: false,
       sawOutput: false,
       resumed: false,
@@ -630,6 +711,8 @@ export class Engine {
       if (this.lives.get(meta.id) === live) {
         this.lives.delete(meta.id);
         clearTimeout(live.idleTimer);
+        this.backgroundLost(meta, [...live.background.values()], "Claude Code stopped");
+        live.background.clear();
         this.emitThread(meta);
       }
     }
@@ -660,13 +743,17 @@ export class Engine {
     live.closed = true;
     clearTimeout(live.idleTimer);
     this.lives.delete(id);
+    const meta = this.store.thread(id);
+    if (meta && live.background.size) {
+      this.backgroundLost(meta, [...live.background.values()], `the session closed: ${why}`);
+    }
+    live.background.clear();
     live.input.close();
     try {
       live.query.close();
     } catch {
       // closed already
     }
-    const meta = this.store.thread(id);
     if (meta) this.emitThread(meta);
   }
 
@@ -742,6 +829,18 @@ export class Engine {
         .catch(() => {});
     } else if (msg.subtype === "commands_changed") {
       this.setCommands(meta, msg.commands);
+    } else if (msg.subtype === "background_tasks_changed") {
+      this.setBackground(meta, live, msg.tasks);
+    } else if (msg.subtype === "task_notification" && !msg.ambient && !msg.skip_transcript &&
+      live.seenTasks.has(msg.task_id)) {
+      const task = live.seenTasks.get(msg.task_id);
+      this.store.append(meta.id, {
+        type: "system",
+        subtype: "background_done",
+        text: `Background task ${msg.status}: ${task.description || task.type || msg.task_id}`,
+        task: { ...task, status: msg.status },
+      });
+      this.emitEntry(meta.id, this.lastEntry);
     } else if (msg.subtype === "compact_boundary") {
       const m = msg.compact_metadata ?? {};
       this.store.append(meta.id, {

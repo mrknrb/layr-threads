@@ -256,7 +256,8 @@ tool(
   (a) => engine.wait(a.thread, a.timeoutSec ?? 120),
 );
 
-tool("thread_status", "One thread's state: status, workspace and branch, model, pending approvals, queue, todos, cost.", { thread: threadId }, async (a) => {
+tool("thread_status", "One thread's state: status, workspace and branch, model, pending approvals, queue, todos, cost, " +
+  "background tasks still running (subagents, background shells, monitors).", { thread: threadId }, async (a) => {
   const meta = engine.requireThread(a.thread);
   const summary = engine.summary(meta);
   const live = engine.lives.get(a.thread);

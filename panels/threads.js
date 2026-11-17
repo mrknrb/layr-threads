@@ -169,6 +169,8 @@ function threadRow(t) {
       waiting ? h("span", { class: "badge wait" }, icon("shield", 11), "Needs you") : null,
       ws.kind === "worktree" ? h("span", { class: "badge mono", title: ws.path }, icon("branch", 11), ws.branch ?? "worktree") : null,
       t.queue?.length ? h("span", { class: "badge" }, `${t.queue.length} queued`) : null,
+      t.background?.length ? h("span", { class: "badge", title: t.background.map((b) => b.description).join("
+") }, `${t.background.length} in background`) : null,
       h("span", { class: "prev" }, t.status === "failed" && t.error ? t.error : t.preview || "")),
     h("div", { class: "row-acts" }, arch),
   );
