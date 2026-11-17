@@ -1,13 +1,19 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Claude Code threads in your projects and worktrees, with approvals, live streaming, and plugins made with AI.",
   "author": "mrknrb",
   "layr": "^0.1",
   "icon": "smart_toy",
-  "permissions": ["data", "pc", "agents", "packages", "plugins:*", "events:global"],
+  "permissions": ["data", "pc", "agents", "packages", "events:global"],
   "needs": ["pc", "node", "claude-code"],
+  "connections": [
+    { "plugin": "pipeline", "groups": ["thread"],
+      "why": "In a pipeline task's thread: the task's buttons, and your messages and answers go through the pipeline" },
+    { "plugin": "concepts", "groups": ["read"],
+      "why": "Shows the concept nodes a thread touched, and the prototype pages linked in its replies" }
+  ],
   "panels": [
     { "id": "threads", "title": "Claude threads", "page": "panels/threads.html", "icon": "forum", "single": true },
     { "id": "thread", "title": "Claude thread", "page": "panels/thread.html", "icon": "chat" },
