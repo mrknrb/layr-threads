@@ -198,10 +198,11 @@ function frameFor(p, html, css) {
   fits.add(fit);
   const grip = h("div", { class: "proto-grip",
     title: "Drag to make it taller or shorter (double-click: as tall as its page)" });
-  // The pointer stays captured: over the frame it would otherwise be lost to the page.
+  // The window hears the moves (pointer capture loses them in layr's Windows web views); the frames take no pointer
+  // meanwhile, so the page inside doesn't swallow them.
   grip.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    grip.setPointerCapture(e.pointerId);
+    document.body.classList.add("proto-resizing");
     grip.classList.add("resizing");
     const start = box.offsetHeight;
     const from = e.clientY;
@@ -211,11 +212,14 @@ function frameFor(p, html, css) {
     };
     const done = () => {
       grip.classList.remove("resizing");
-      grip.removeEventListener("pointermove", move);
-      grip.removeEventListener("lostpointercapture", done);
+      document.body.classList.remove("proto-resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", done);
+      window.removeEventListener("pointercancel", done);
     };
-    grip.addEventListener("pointermove", move);
-    grip.addEventListener("lostpointercapture", done);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", done);
+    window.addEventListener("pointercancel", done);
   });
   grip.addEventListener("dblclick", () => {
     dragged.delete(p.id);

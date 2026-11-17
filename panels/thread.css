@@ -365,3 +365,13 @@ a.layr-link { text-decoration-style: dashed; }
 .c-node .c-did.changed { color: var(--accent); }
 .c-node .c-note { color: var(--fg-dim); font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 45%; }
+
+/* Dragging a prototype's height: the pages take no pointer (they would swallow the moves), the cursor stays. */
+body.proto-resizing,
+body.proto-resizing * {
+  cursor: ns-resize !important;
+  user-select: none;
+}
+body.proto-resizing iframe {
+  pointer-events: none;
+}
