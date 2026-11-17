@@ -28,12 +28,47 @@ import {
 } from "./util.js";
 
 const IDLE_CLOSE_MS = Number(process.env.LAYR_CLAUDE_IDLE_MS || 10 * 60_000);
+/** Turns cut off by the backend stopping are picked up again when it starts (LAYR_CLAUDE_RESUME=0: not). */
+const RESUME_ON = process.env.LAYR_CLAUDE_RESUME !== "0";
+/** At most this many times in a row without a turn ending: a turn that brings the engine down isn't run forever. */
+const RESUME_MAX = 3;
+/** Nor when it stopped longer ago than this (layr closed for days): it waits for the user as "interrupted". */
+const RESUME_MAX_AGE_MS = Number(process.env.LAYR_CLAUDE_RESUME_MAX_AGE_H || 24) * 3_600_000;
 const DELTA_FLUSH_MS = 60;
 const TOOL_RESULT_MAX = 20_000;
 const TOOL_INPUT_MAX = 60_000;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 export const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"];
+
+/** A model's context window when Claude Code hasn't said it: 1M for the `[1m]` ones, else 200k. */
+export function contextWindowFor(model) {
+  return /\[1m\]|-1m\b/i.test(String(model ?? "")) ? 1_000_000 : 200_000;
+}
+
+/**
+ * How full a thread's context is: {tokens, window, percent} or null before its first answer. `window`: what Claude
+ * Code reported for the model the thread runs on (a result's `modelUsage`), else by the model's name.
+ */
+export function contextFill(meta) {
+  const tokens = meta.contextTokens;
+  if (!tokens) return null;
+  const model = meta.resolvedModel ?? meta.model;
+  const said = meta.contextWindow && meta.contextWindow.model === model ? meta.contextWindow.tokens : null;
+  const window = said || contextWindowFor(model);
+  return { tokens, window, percent: Math.min(100, Math.round((tokens / window) * 1000) / 10) };
+}
+
+/** The main model's context window from a result's `modelUsage` ({[model]: {contextWindow}}), or null. */
+export function reportedWindow(modelUsage, model) {
+  const entries = Object.entries(modelUsage ?? {}).filter(([, u]) => Number(u?.contextWindow) > 0);
+  if (!entries.length || !model) return null;
+  const exact = entries.find(([k]) => k === model);
+  if (exact) return Number(exact[1].contextWindow);
+  const base = String(model).replace(/\[1m\]$/i, "");
+  const near = entries.filter(([k]) => k.replace(/\[1m\]$/i, "") === base);
+  return near.length ? Math.max(...near.map(([, u]) => Number(u.contextWindow))) : null;
+}
 
 /** Allow rules a thread starts with (thread_start `allowedTools`): non-empty strings, at most 100. */
 export function allowedToolsOf(list) {
@@ -71,18 +106,73 @@ export class Engine {
 
   // ---------------------------------------------------------------- startup
 
-  /** Turns that ran when the backend stopped can't go on: say so, and resume the session on the next message. */
+  /**
+   * Turns that ran when the backend stopped (crashed, was killed, restarted, layr quit) died with their Claude Code
+   * processes. Each is picked up again by itself (resumeAfterRestart, soon after the start): its thread waits as
+   * "starting" (messages sent meanwhile queue) and its session is resumed with a note saying what happened. Not when
+   * the thread is archived, the stop is older than RESUME_MAX_AGE_MS, it was picked up RESUME_MAX times in a row
+   * without a turn ending (a turn that kills the engine), or LAYR_CLAUDE_RESUME=0: then it is "interrupted", as before.
+   */
   recover() {
+    this.toResume = [];
     for (const meta of Object.values(this.store.threads)) {
       if (meta.background?.length) this.backgroundLost(meta, meta.background, "the Claude engine restarted");
-      if (meta.status === "running" || meta.status === "waiting" || meta.status === "starting") {
-        this.store.append(meta.id, { type: "system", text: "The Claude engine restarted while this turn ran; it stopped." });
-        this.store.updateThread(meta.id, { status: "interrupted", pendingApprovals: [] });
+      const ran = meta.status === "running" || meta.status === "waiting" || meta.status === "starting";
+      if (ran || meta.restartResume) {
+        const stoppedAt = meta.restartResume?.at ?? meta.lastActivity ?? nowIso();
+        const waiting = meta.restartResume?.waiting ?? meta.status === "waiting";
+        const tries = meta.restartResumes ?? 0;
+        const recent = Date.now() - (Date.parse(stoppedAt) || Date.now()) < RESUME_MAX_AGE_MS;
+        if (RESUME_ON && !meta.archived && recent && tries < RESUME_MAX) {
+          this.store.append(meta.id, {
+            type: "system",
+            subtype: "restart",
+            text: "The Claude engine restarted while this turn ran; it goes on by itself.",
+          });
+          this.store.updateThread(meta.id, {
+            status: "starting",
+            pendingApprovals: [],
+            restartResume: { at: stoppedAt, waiting },
+          });
+          this.toResume.push(meta.id);
+        } else {
+          const why = tries >= RESUME_MAX ? ` (picked up again ${tries} times in a row already, so not again)` : "";
+          const text = `The Claude engine restarted while this turn ran; it stopped${why}.`;
+          this.store.append(meta.id, { type: "system", text });
+          this.store.updateThread(meta.id, {
+            status: "interrupted",
+            pendingApprovals: [],
+            restartResume: null,
+            restartResumes: 0,
+          });
+        }
       } else if (meta.pendingApprovals?.length) {
         this.store.updateThread(meta.id, { pendingApprovals: [] });
       }
     }
     this.store.saveIndexNow();
+  }
+
+  /** The threads recover() set aside, picked up again: each resumes its session with a note (or its first prompt). */
+  async resumeAfterRestart() {
+    for (const id of (this.toResume ?? []).splice(0)) {
+      const meta = this.store.thread(id);
+      if (!meta?.restartResume || meta.status !== "starting" || this.lives.has(id)) continue;
+      const { at, waiting } = meta.restartResume;
+      this.store.updateThread(id, { restartResume: null, restartResumes: (meta.restartResumes ?? 0) + 1 });
+      try {
+        if (meta.sessionStarted) {
+          await this.dispatch(meta, { text: restartNote(at, waiting), auto: "restart", fork: true });
+        } else {
+          // Claude Code never started the session: its first message again, as it was.
+          const first = this.store.readTranscript(id).findLast((e) => e.type === "user" && !e.auto);
+          await this.dispatch(meta, { text: first?.text ?? "", savedImages: first?.images ?? [], auto: "restart" });
+        }
+        log(`thread ${id} picked up again after the restart`);
+      } catch (error) {
+        this.fail(meta, error);
+      }
+    }
   }
 
   // ---------------------------------------------------------------- threads
@@ -369,10 +459,12 @@ export class Engine {
       turns: meta.turns,
       costUsd: round(meta.costUsd, 4),
       contextTokens: meta.contextTokens,
+      context: contextFill(meta),
       preview: meta.preview,
       error: meta.error,
       todos: meta.todos,
       background: meta.background ?? [],
+      resuming: Boolean(meta.restartResume),
       queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at })),
       queuePaused: meta.queuePaused,
       pendingApprovals: meta.pendingApprovals,
@@ -427,18 +519,21 @@ export class Engine {
 
   // ---------------------------------------------------------------- turns
 
-  /** Start a turn now: open the query when needed and push the message. */
-  async dispatch(meta, { text, images, savedImages }) {
+  /**
+   * Start a turn now: open the query when needed and push the message. `auto`: not the user's ("restart": the
+   * engine picks a cut-off turn up again); `fork`: a new query resumes into a fork of the session (resumeAfterRestart).
+   */
+  async dispatch(meta, { text, images, savedImages, auto, fork = false }) {
     const message = this.userMessage(meta, { text, images, savedImages });
     let live = this.lives.get(meta.id);
     if (live?.needsRestart && this.canClose(live)) {
       this.closeLive(meta.id, "restart for new settings");
       live = null;
     }
-    this.store.append(meta.id, { type: "user", text: message.text, images: message.images });
+    this.store.append(meta.id, { type: "user", text: message.text, images: message.images, ...(auto ? { auto } : {}) });
     this.emitEntry(meta.id, this.lastEntry);
     if (!meta.title || meta.title === "New thread") this.store.updateThread(meta.id, { title: titleFromPrompt(text) });
-    if (!live) live = await this.openLive(meta);
+    if (!live) live = await this.openLive(meta, { fork });
     this.beginTurn(meta, live);
     this.tellLostBackground(meta, message.sdk);
     live.input.push(message.sdk);
@@ -490,6 +585,8 @@ export class Engine {
       error,
       costUsd: (meta.costUsd ?? 0) + (result.costUsd ?? 0),
       pendingApprovals: [],
+      // A turn that ends at all didn't bring the engine down: a later restart may pick a turn up again.
+      ...(meta.restartResumes ? { restartResumes: 0 } : {}),
     });
     this.touch(meta);
     if (status === "done") this.notifyUser(meta, `Claude finished: ${meta.title}`, "success");
@@ -598,7 +695,11 @@ export class Engine {
 
   // ---------------------------------------------------------------- the query
 
-  async openLive(meta, { fresh = false } = {}) {
+  /**
+   * A new query for the thread. `fresh`: a new session (the old one is gone); `fork`: resume into a fork of the
+   * session, after a restart: a Claude Code process of the old backend still closing can't write into the same file.
+   */
+  async openLive(meta, { fresh = false, fork = false } = {}) {
     const mcpServers = {};
     try {
       if (this.hub.available) {
@@ -669,7 +770,7 @@ export class Engine {
       },
       env: claudeEnv(),
       stderr: (data) => log(`[${meta.id} stderr] ${String(data).trimEnd()}`),
-      ...(resume ? { resume: meta.sessionId } : { sessionId: meta.sessionId }),
+      ...(resume ? { resume: meta.sessionId, ...(fork ? { forkSession: true } : {}) } : { sessionId: meta.sessionId }),
     };
     live.resumed = resume;
     live.query = query({ prompt: input, options });
@@ -972,6 +1073,9 @@ export class Engine {
       live.lastTotalCost = total;
     }
     const u = msg.usage ?? {};
+    const model = meta.resolvedModel ?? live.model;
+    const window = reportedWindow(msg.modelUsage, model);
+    if (window) this.store.updateThread(meta.id, { contextWindow: { model, tokens: window } });
     this.endTurn(meta, live, {
       subtype: msg.subtype,
       isError: msg.is_error === true || msg.subtype !== "success",
@@ -1224,18 +1328,37 @@ export class Engine {
     if (buf.items.size) this.hub.emit(`claude:thread.${id}`, { kind: "delta", deltas: [...buf.items.values()] });
   }
 
+  /** The backend stops: running turns are marked to be picked up again at the next start (recover). */
   async shutdown() {
     for (const id of [...this.lives.keys()]) {
       const meta = this.store.thread(id);
       const live = this.lives.get(id);
       if (meta && live?.turnActive) {
-        this.store.append(id, { type: "system", text: "The Claude engine stopped while this turn ran." });
-        this.store.updateThread(id, { status: "interrupted", pendingApprovals: [] });
+        this.store.updateThread(id, {
+          status: "interrupted",
+          pendingApprovals: [],
+          restartResume: { at: nowIso(), waiting: meta.status === "waiting" },
+        });
+        // The query ending below isn't the turn failing.
+        live.turnActive = false;
       }
       this.closeLive(id, "shutdown");
     }
     this.store.saveIndexNow();
   }
+}
+
+/** What a turn picked up again after a restart starts with (the lost background tasks' note goes in front of it). */
+export function restartNote(at, waiting) {
+  const when = Number.isNaN(Date.parse(at)) ? "" : ` at ${new Date(at).toLocaleString("en-GB", { hour12: false })}`;
+  return (
+    `[layr: the Claude engine restarted${when} while you were working on this, which cut your turn off: what you ` +
+    "were running then (commands, tools, subagents) was stopped, and its results may be missing. Carry on where you " +
+    "left off. First check what was already done (files, git status, the output of what you ran) instead of " +
+    "assuming, and don't redo finished steps." +
+    (waiting ? " You were waiting for the user's permission or answer then: ask again if you still need it." : "") +
+    "]"
+  );
 }
 
 function isSessionGone(text) {

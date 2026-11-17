@@ -169,8 +169,8 @@ function threadRow(t) {
       waiting ? h("span", { class: "badge wait" }, icon("shield", 11), "Needs you") : null,
       ws.kind === "worktree" ? h("span", { class: "badge mono", title: ws.path }, icon("branch", 11), ws.branch ?? "worktree") : null,
       t.queue?.length ? h("span", { class: "badge" }, `${t.queue.length} queued`) : null,
-      t.background?.length ? h("span", { class: "badge", title: t.background.map((b) => b.description).join("
-") }, `${t.background.length} in background`) : null,
+      t.background?.length ? h("span", { class: "badge", title: t.background.map((b) => b.description).join("\n") },
+        `${t.background.length} in background`) : null,
       h("span", { class: "prev" }, t.status === "failed" && t.error ? t.error : t.preview || "")),
     h("div", { class: "row-acts" }, arch),
   );
@@ -281,7 +281,31 @@ function closeForm() {
   $("new-form").replaceChildren();
 }
 
-function openForm(projectId, { addProject = false } = {}) {
+/** A project from `params.project`: its id, name or folder; a folder that isn't one yet is {path}. */
+function projectOf(ref) {
+  if (!ref) return null;
+  const s = String(ref).trim();
+  const norm = (p) => String(p).replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  const found = state.projects.find((p) => p.id === s) || state.projects.find((p) => norm(p.path) === norm(s)) ||
+    state.projects.find((p) => p.name.toLowerCase() === s.toLowerCase());
+  if (found) return { id: found.id };
+  return /[\\/]/.test(s) ? { path: s } : null;
+}
+
+/**
+ * Open the new-thread form from panel params: `{new: true}`, or `{prompt, project?}` (the concepts panel opens it so,
+ * with a prompt to start from). A form open already is filled again only when its prompt is still empty.
+ */
+function openFormFrom(params) {
+  if (!params?.new && !params?.prompt) return;
+  const open = !$("new-form").hidden;
+  const typed = $("new-form").querySelector("textarea")?.value.trim();
+  if (open && (!params.prompt || typed)) return;
+  const project = projectOf(params.project);
+  openForm(project?.id, { addProject: Boolean(project?.path), path: project?.path, prompt: params.prompt });
+}
+
+function openForm(projectId, { addProject = false, path: folder = "", prompt: text = "" } = {}) {
   const form = $("new-form");
   form.hidden = false;
   const last = localStorage.getItem("claude.lastProject");
@@ -443,10 +467,13 @@ function openForm(projectId, { addProject = false } = {}) {
   const initial = projectId ?? (state.projects.some((p) => p.id === last) ? last : state.projects[0]?.id ?? "__add");
   fillProjects(addProject ? "__add" : initial);
   setWorkspace("project");
+  if (folder) pathInput.value = folder;
+  if (text) prompt.value = String(text);
   prompt.addEventListener("input", () => {
     const slug = (title.value || prompt.value).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).replace(/-+$/, "");
     branch.placeholder = `layr/${slug || "<from the title>"}`;
   });
+  if (text) prompt.dispatchEvent(new Event("input"));
   (addProject || projectSel.value === "__add" ? pathInput : prompt).focus();
 }
 
@@ -456,10 +483,8 @@ await Promise.all([loadProjects(), loadThreads().catch((e) => notify(`Claude: ${
 render();
 void loadModels().then(() => document.dispatchEvent(new Event("claude-models")));
 void loadUsage(false);
-if (layr.info?.params?.new) openForm();
-// "New Claude thread" while this (single) panel is open: it is opened again with {new: true}.
-layr.panel.onParams((params) => {
-  if (params?.new && $("new-form").hidden) openForm();
-});
+openFormFrom(layr.info?.params);
+// "New Claude thread" while this (single) panel is open: it is opened again with {new: true} (or {prompt, project}).
+layr.panel.onParams((params) => openFormFrom(params));
 setInterval(render, 30_000);
 setInterval(() => loadUsage(false), 5 * 60_000);

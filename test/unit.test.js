@@ -2,10 +2,12 @@
 // and the Changes drawer's git side (base branch detection) in temporary repositories. Run: node test/unit.test.js
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Account } from "../backend/account.js";
+import { contextFill, contextWindowFor, reportedWindow } from "../backend/engine.js";
 import { baseRef, parseNumstat, threadChanges, fileDiff } from "../backend/changes.js";
 import { checkFresh, scriptFor, shellOf, terminalEnv } from "../backend/terminal.js";
 import {
@@ -229,4 +231,99 @@ test("changes: base branch detection and a worktree's changes", async () => {
   assert.equal(own.base, null);
   assert.equal(own.files, 1);
   assert.equal(await threadChanges(tmp), null);
+});
+
+// ------------------------------------------------------------------ context fill
+
+test("context fill: used / window, the window as Claude Code reported it, else by the model", () => {
+  assert.equal(contextFill({ contextTokens: null, model: "opus" }), null);
+  assert.deepEqual(contextFill({ contextTokens: 50_000, model: "sonnet" }), { tokens: 50_000, window: 200_000, percent: 25 });
+  assert.equal(contextFill({ contextTokens: 50_000, resolvedModel: "claude-opus-4-6[1m]" }).window, 1_000_000);
+  assert.equal(contextFill({ contextTokens: 50_000, model: "opus[1m]" }).percent, 5);
+  const reported = { contextTokens: 120_000, resolvedModel: "claude-x", contextWindow: { model: "claude-x", tokens: 400_000 } };
+  assert.equal(contextFill(reported).percent, 30);
+  // Reported for another model (switched since): by the name again.
+  assert.equal(contextFill({ ...reported, resolvedModel: "claude-y" }).window, 200_000);
+  assert.equal(contextFill({ contextTokens: 900_000, model: "haiku" }).percent, 100);
+  const usage = { "claude-haiku-4-5": { contextWindow: 200_000 }, "claude-opus-4-6[1m]": { contextWindow: 1_000_000 } };
+  assert.equal(reportedWindow(usage, "claude-opus-4-6[1m]"), 1_000_000);
+  assert.equal(reportedWindow(usage, "claude-opus-4-6"), 1_000_000);
+  assert.equal(reportedWindow(usage, "claude-sonnet-4-6"), null);
+  assert.equal(reportedWindow({}, "x"), null);
+  assert.equal(contextWindowFor("claude-sonnet-4-6"), 200_000);
+});
+
+// ------------------------------------------------------------------ the account: switching accounts
+
+test("account: a switched login drops the old account's limits and refusal at once and reads fresh", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "layr-claude-account-"));
+  const config = path.join(dir, ".claude.json");
+  const signIn = (email, at) => {
+    writeFileSync(config, JSON.stringify({ oauthAccount: { emailAddress: email }, projects: {} }));
+    utimesSync(config, at, at);
+  };
+  signIn("a@example.com", new Date(Date.now() - 60_000));
+  const changes = [];
+  const account = new Account({ configPath: config, onAccountChanged: (email) => changes.push(email) });
+  let probes = 0;
+  // Claude Code isn't started: a probe "measures" the account the config names.
+  account.probe = async ({ withUsage } = {}) => {
+    probes++;
+    account.noteAccount(account.liveEmail());
+    account.account = { email: account.liveEmail(), subscriptionType: "max" };
+    if (withUsage) {
+      account.usageCheckedAt = Date.now();
+      account.setUsage({ rate_limits_available: true, rate_limits: { five_hour: { utilization: 12, resets_at: "x" } } });
+    }
+  };
+  await account.usage();
+  assert.equal(probes, 1);
+  // Account A hits its limit: refused until its reset.
+  const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+  account.setRateLimit({ status: "rejected", rateLimitType: "five_hour", utilization: 1, resetsAt: reset });
+  assert.ok(account.limits.rejectedUntil);
+  assert.equal(account.limits.fiveHour.utilization, 100);
+  const cached = await account.usage();
+  assert.equal(probes, 1, "within 5 minutes the reading is kept");
+  assert.ok(cached.limits.rejectedUntil);
+  // The accounts plugin switches the live login to B.
+  signIn("b@example.com", new Date());
+  assert.equal(account.checkAccount(), true, "the switch is seen");
+  assert.deepEqual(changes, ["b@example.com"]);
+  assert.equal(account.limits.rejectedUntil, null, "A's refusal is gone at once");
+  assert.equal(account.limits.fiveHour, null, "and A's windows");
+  const fresh = await account.usage();
+  assert.equal(probes, 2, "B is measured fresh, not after 5 minutes");
+  assert.equal(fresh.account.email, "b@example.com");
+  assert.equal(fresh.limits.rejectedUntil, null);
+  assert.equal(fresh.limits.fiveHour.utilization, 12);
+  // Seen by a rate limit event itself, without the watch: back to A, whose refusal is A's again.
+  signIn("a@example.com", new Date(Date.now() + 1000));
+  account.setRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: reset });
+  assert.equal(account.limitsAccount, "a@example.com");
+  assert.ok(account.limits.rejectedUntil);
+  assert.equal(account.limits.fiveHour.utilization, null, "B's 12% isn't carried over");
+  // An unreadable or half-written config keeps the last account (no false switch).
+  writeFileSync(config, "{ half");
+  utimesSync(config, new Date(Date.now() + 2000), new Date(Date.now() + 2000));
+  assert.equal(account.checkAccount(), false);
+  assert.ok(account.limits.rejectedUntil);
+});
+
+test("account: the watch sees a switch by itself", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "layr-claude-account-"));
+  const config = path.join(dir, ".claude.json");
+  writeFileSync(config, JSON.stringify({ oauthAccount: { emailAddress: "a@example.com" } }));
+  utimesSync(config, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  const changes = [];
+  const account = new Account({ configPath: config, onAccountChanged: (email) => changes.push(email) });
+  account.probe = async () => {};
+  account.limits.rejectedUntil = new Date(Date.now() + 3_600_000).toISOString();
+  account.watch(20);
+  assert.ok(account.limits.rejectedUntil, "the first look only learns the account");
+  writeFileSync(config, JSON.stringify({ oauthAccount: { emailAddress: "b@example.com" } }));
+  await new Promise((r) => setTimeout(r, 100));
+  account.stopWatching();
+  assert.equal(account.limits.rejectedUntil, null);
+  assert.equal(changes[0], "b@example.com");
 });

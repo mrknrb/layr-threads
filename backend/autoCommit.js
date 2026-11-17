@@ -37,7 +37,7 @@ export function commitMessage(prompt, reply) {
 export function lastPrompt(entries) {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (e.type === "user" && !e.parent) return e.text ?? "";
+    if (e.type === "user" && !e.parent && !e.auto) return e.text ?? "";
   }
   return "";
 }

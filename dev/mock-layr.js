@@ -42,6 +42,7 @@
    * is the thread t_demo1 (calls are logged in localStorage "mock-layr.pipelineCalls").
    */
   async function fakePlugin(plugin, tool, args) {
+    if (plugin === "concepts" && localStorage.getItem("mock-layr.concepts") === "1") return fakeConcepts(tool, args);
     if (plugin !== "pipeline" || localStorage.getItem("mock-layr.pipeline") !== "1") throw new Error(`No plugin ${plugin}`);
     const calls = JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]");
     calls.push({ tool, args });
@@ -57,6 +58,27 @@
           { id: "delete", label: "Delete", kind: "danger", confirm: "Delete #42 and its worktree?" }] });
     }
     return reply({ ok: true });
+  }
+
+  /**
+   * localStorage "mock-layr.concepts" = "1": a fake concepts plugin, answering as the real one (JSON text, no
+   * structured content): prototypes p-sort-1 and p-sort-2, and two nodes touched by t_demo1.
+   */
+  function fakeConcepts(tool, args) {
+    const text = (v) => ({ content: [{ type: "text", text: JSON.stringify(v) }] });
+    if (tool === "prototype_page") {
+      const tall = args.node === "p-sort-2";
+      if (args.node !== "p-sort-1" && !tall) return { content: [{ type: "text", text: `#${args.node} is not a prototype` }], isError: true };
+      return text({ html: `<div class="layr-toolbar"><button class="layr-button primary" id="sort">Sort ${tall ? "▾" : "↓"}</button></div>` +
+        `<div style="height:${tall ? 300 : 90}px;border:1px dashed var(--border)">notes</div>` +
+        `<script>document.getElementById("sort").onclick = () => document.body.append("sorted");</script>` });
+    }
+    if (tool === "thread_nodes") {
+      if (args.thread !== "t_demo1") return text([]);
+      return text([{ id: "n-notes", text: "Notes list\nThe list of notes", did: "changed", note: "Added a Sort button" },
+        { id: "n-order", text: "Sort order", did: "mentioned", note: null }]);
+    }
+    return { content: [{ type: "text", text: `No tool ${tool}` }], isError: true };
   }
 
   const toParent = (msg) => {
@@ -107,6 +129,17 @@
         toParent({ type: "open", panel: p, params: prm ?? {}, where: opts?.where ?? "tab" });
         if (window.parent === window) window.open(`/panels/${p}.html?panel=${p}&theme=${theme}&params=${encodeURIComponent(JSON.stringify(prm ?? {}))}`);
         return { instance: "p_devopened" };
+      },
+    },
+    links: {
+      // Logged in localStorage "mock-layr.links"; a thread link opens its panel as the core would.
+      open: async (link) => {
+        const links = JSON.parse(localStorage.getItem("mock-layr.links") || "[]");
+        links.push(String(link));
+        localStorage.setItem("mock-layr.links", JSON.stringify(links));
+        const m = /^layr:\/\/claude\/thread\/(.+)$/i.exec(String(link));
+        if (m) return window.layr.panels.open("thread", { thread: decodeURIComponent(m[1]), link });
+        return null;
       },
     },
     panel: {

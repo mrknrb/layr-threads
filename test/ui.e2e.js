@@ -76,8 +76,14 @@ try {
 
   // ▶ Run and layr:// links.
   check((await thread.locator(".run-btn").count()) === 1, "▶ Run on the powershell block");
-  check((await thread.locator("a.layr-link").count()) === 1, "layr:// link in plain text is a link");
-  await thread.locator("a.layr-link").click();
+  const threadLinks = thread.locator('a.layr-link[href^="layr://claude/"]');
+  check((await threadLinks.count()) === 1, "layr:// link in plain text is a link");
+  // Without the concepts plugin: no prototypes under replies, no ◇ chip.
+  check((await thread.locator(".protos:not([hidden])").count()) === 0, "no prototypes without concepts");
+  check(await thread.locator("#concepts-chip").isHidden(), "no ◇ chip without concepts");
+  check(/\d+(\.\d)?% context/.test(await thread.locator("#context").textContent()), "context fill as a percentage",
+    `${await thread.locator("#context").textContent()} (${await thread.locator("#context").getAttribute("title")})`);
+  await threadLinks.click();
   await page.waitForTimeout(500);
   check((await page.locator("#rtabs .tab").count()) === 2, "layr:// link opened the thread in layr");
   await page.locator("#rtabs .tab").first().click();
@@ -127,6 +133,57 @@ try {
   check(items.includes("Open folder in VS Code") && items.includes("Copy link") && !items.includes("+ Pipeline"), "header menu", items.join(", "));
   await page.keyboard.press("Escape");
 
+  // With a fake concepts plugin: the prototypes a reply links to run under it, the ◇ chip lists the nodes touched.
+  await page.evaluate(() => {
+    localStorage.setItem("mock-layr.concepts", "1");
+    localStorage.removeItem("mock-layr.links");
+  });
+  await page.reload();
+  const tc = page.frameLocator("#right iframe.on");
+  await tc.locator(".protos:not([hidden]) iframe.proto-frame").first().waitFor({ timeout: 20_000 });
+  const frames = tc.locator("iframe.proto-frame");
+  check((await frames.count()) === 2, "both prototypes of the reply run under it");
+  check((await frames.first().getAttribute("sandbox")) === "allow-scripts", "in a sandbox with scripts only");
+  check(/2 prototypes/.test(await tc.locator(".proto-title").textContent()), "one strip for both");
+  // Frames out of view aren't laid out (nor say their height) until they are scrolled to.
+  await tc.locator(".proto-columns").scrollIntoViewIfNeeded();
+  const boxes = tc.locator(".proto-box");
+  const heights = async () => [await boxes.nth(0).evaluate((e) => e.offsetHeight), await boxes.nth(1).evaluate((e) => e.offsetHeight)];
+  let [h1, h2] = await heights();
+  for (let i = 0; i < 25 && !(h2 > h1); i++) {
+    await page.waitForTimeout(200);
+    [h1, h2] = await heights();
+  }
+  check(h2 > h1 && h1 >= 120, "each as tall as its page", `${h1} / ${h2}`);
+  await page.waitForTimeout(300);
+  await tc.locator(".proto-columns").scrollIntoViewIfNeeded();
+  const grip = await tc.locator(".proto-grip").first().boundingBox();
+  await page.mouse.move(grip.x + 20, grip.y + 3);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 20, grip.y + 103, { steps: 5 });
+  await page.mouse.up();
+  const dragged = await boxes.nth(0).evaluate((e) => e.offsetHeight);
+  check(Math.abs(dragged - (h1 + 100)) <= 4, "its height can be dragged", `${h1} → ${dragged}`);
+  const inner = tc.frameLocator("iframe.proto-frame >> nth=0");
+  await inner.locator("#sort").click();
+  check(/sorted/.test(await inner.locator("body").textContent()), "the page's own script runs");
+  await page.screenshot({ path: path.join(out, "16a-prototypes.png") });
+  await tc.locator(".proto-label", { hasText: "Sort menu" }).click();
+  const chipC = tc.locator("#concepts-chip");
+  await chipC.waitFor({ state: "visible", timeout: 10_000 });
+  check((await chipC.textContent()) === "◇ 2", "◇ chip counts the nodes touched", await chipC.textContent());
+  await chipC.click();
+  const rows = tc.locator("#concepts .c-node");
+  check((await rows.count()) === 2 && /Notes list.*changed.*Added a Sort button/.test(await rows.first().textContent()),
+    "the nodes with what happened", await rows.first().textContent());
+  await page.screenshot({ path: path.join(out, "16b-concept-nodes.png") });
+  await rows.first().click();
+  await page.waitForTimeout(300);
+  const opened = await page.evaluate(() => JSON.parse(localStorage.getItem("mock-layr.links") || "[]"));
+  check(opened.includes("layr://concepts/prototype/p-sort-2") && opened.includes("layr://concepts/node/n-notes"),
+    "open in Concepts, and a node, through layr.links.open", opened.join(", "));
+  await page.evaluate(() => localStorage.removeItem("mock-layr.concepts"));
+
   // The pipeline strip, with a fake pipeline.
   await page.evaluate(() => localStorage.setItem("mock-layr.pipeline", "1"));
   await page.reload();
@@ -167,6 +224,14 @@ try {
   const phoneItems = await t3.locator(".own-menu button").allTextContents();
   check(!phoneItems.some((i) => /VS Code|Explorer/.test(i)), "no PC windows in the phone's menu", phoneItems.join(", "));
   await page.keyboard.press("Escape");
+
+  // The threads panel opened with a prompt (as the concepts panel opens it): the new-thread form is filled.
+  const params = encodeURIComponent(JSON.stringify({ prompt: "Build the sort menu prototype", project: "recipes-app" }));
+  await page.goto(`${base}/panels/threads.html?panel=threads&params=${params}`);
+  await page.locator("#new-form textarea").waitFor({ timeout: 20_000 });
+  check((await page.locator("#new-form textarea").inputValue()) === "Build the sort menu prototype", "params.prompt fills the form");
+  const picked = await page.locator("#new-form select").first().evaluate((s) => s.options[s.selectedIndex]?.text);
+  check(picked === "recipes-app", "params.project picks the project", picked);
 
   // Light theme.
   await page.evaluate(() => localStorage.removeItem("mock-layr.phone"));

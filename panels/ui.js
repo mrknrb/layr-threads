@@ -114,7 +114,18 @@ export function confirmIn(holder, text, { ok = "OK", danger = false } = {}) {
 
 /** A pipeline tool; throws when the pipeline isn't installed, or doesn't have the tool. */
 export function pipelineCall(tool, args) {
-  return window.layr.tools.call(tool, args, { plugin: "pipeline" }).then((result) => {
+  return pluginCall("pipeline", tool, args);
+}
+
+/** Thrown by pluginCall when the tool ran and said it failed (as opposed to: no such plugin, tool, or access). */
+export class ToolFailed extends Error {}
+
+/** Another plugin's tool, its value: structured content, else its text parsed as JSON, else the text. */
+export function pluginCall(plugin, tool, args) {
+  return window.layr.tools.call(tool, args, { plugin }).then((result) => {
+    if (result?.isError) {
+      throw new ToolFailed((result.content ?? []).map((c) => c.text ?? "").join("\n") || `${tool} failed`);
+    }
     if (result?.isError) throw new Error((result.content ?? []).map((c) => c.text ?? "").join("\n") || `${tool} failed`);
     if (result?.structuredContent !== undefined) {
       const s = result.structuredContent;

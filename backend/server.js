@@ -28,7 +28,10 @@ const BUILTIN_COMMANDS = [
 const dataDir = process.env.LAYR_DATA_DIR || path.join(os.homedir(), ".layr-claude-dev");
 const store = new Store(dataDir);
 const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB_TOKEN });
-const account = new Account();
+// Another Claude account signed in (the accounts plugin switched the live login): its limits, not the old one's.
+const account = new Account({
+  onAccountChanged: () => hub.emit("claude:usage", { limits: account.limits, account: account.limitsAccount ?? null }),
+});
 const engine = new Engine({ store, hub, account });
 
 // After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
@@ -69,7 +72,7 @@ function linkPluginFolder(meta) {
     .catch((error) => log(`linking ${meta.cwd} failed:`, errorMessage(error)));
 }
 
-const server = new McpServer({ name: "claude", version: "0.2.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.3.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -461,7 +464,9 @@ function compact(entries) {
   const tools = new Map();
   for (const e of entries) {
     if (e.parent) continue;
-    if (e.type === "user") out.push({ seq: e.seq, role: "user", text: e.text + (e.images?.length ? ` [${e.images.length} image(s)]` : "") });
+    if (e.type === "user" && e.auto === "restart") {
+      out.push({ seq: e.seq, role: "system", text: "layr picked the turn up again after the Claude engine restarted" });
+    } else if (e.type === "user") out.push({ seq: e.seq, role: "user", text: e.text + (e.images?.length ? ` [${e.images.length} image(s)]` : "") });
     else if (e.type === "text") out.push({ seq: e.seq, role: "assistant", text: e.text });
     else if (e.type === "tool_use") {
       const m = { seq: e.seq, role: "tool", text: `${e.name} ${toolSummary(e.name, e.input)}`.trim() };
@@ -494,6 +499,12 @@ async function main() {
   log(`claude backend up (data ${dataDir}, hub ${hub.available ? "on" : "off"})`);
   // Learn the models in the background, so the first thread start doesn't wait for it.
   setTimeout(() => void account.listModels().catch(() => {}), 2000).unref?.();
+  account.watch();
+  // Turns the last backend was running when it stopped go on (Engine.recover): after a moment, so the hub is there
+  // and a Claude Code process of the old backend still closing is gone.
+  const delay = Number(process.env.LAYR_CLAUDE_RESUME_DELAY_MS ?? 3000);
+  const resume = () => engine.resumeAfterRestart().catch((error) => log("picking turns up again:", errorMessage(error)));
+  setTimeout(() => void resume(), delay);
 }
 
 let stopping = false;

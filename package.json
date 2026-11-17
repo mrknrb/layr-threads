@@ -1,15 +1,15 @@
 {
   "name": "layr-plugin-claude",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "layr's Claude Code engine: threads, worktrees, approvals, through the Agent SDK.",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
-    "test": "node test/unit.test.js && node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js && node test/background.test.js && node test/backend.test.js",
+    "test": "node test/unit.test.js && node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js && node test/background.test.js && node test/restart.test.js && node test/backend.test.js",
     "test:unit": "node test/unit.test.js",
-    "test:offline": "node test/unit.test.js && node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js && node test/background.test.js",
+    "test:offline": "node test/unit.test.js && node test/autoCommit.test.js && node test/ask.test.js && node test/threadSettings.test.js && node test/background.test.js && node test/restart.test.js",
     "test:autocommit": "node test/autoCommit.test.js",
     "test:panels": "node test/panels.e2e.js",
     "test:ui": "node test/ui.e2e.js",

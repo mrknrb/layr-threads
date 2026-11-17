@@ -24,6 +24,7 @@ import {
 import { createDraftStore } from "./drafts.js";
 import { foldTurn, groupRuns, isWork, tokensTitle } from "./folds.js";
 import { renderTaskStrip } from "./pipeline.js";
+import { prototypeEmbeds } from "./prototypes.js";
 import { markdown, setMarkdownHooks, toolIcon, toolInputView, toolLabel, toolSummary } from "./render.js";
 import { renderReply } from "./replies.js";
 import {
@@ -32,8 +33,10 @@ import {
   copyText,
   onPhone,
   openFolderOnPc,
+  ToolFailed,
   openLink,
   pipelineCall,
+  pluginCall,
   threadLink,
   threadTask,
 } from "./ui.js";
@@ -336,6 +339,7 @@ function addEntry(e, { into = main } = {}) {
       arrange(turn);
       if (into === main) {
         scheduleChanges();
+        if (state.loaded) scheduleConcepts();
         if (!state.commandsKnown) state.commands = null;
       }
       return null;
@@ -394,6 +398,11 @@ function when(iso) {
 }
 
 function userBubble(e) {
+  // Sent by layr, not you: a turn cut off by a restart of the Claude engine, picked up again.
+  if (e.auto === "restart") {
+    return h("div", { class: "user-wrap" }, h("div", { class: "msg-user auto", title: e.text },
+      icon("refresh", 13), "Picked up again after the Claude engine restarted"), when(e.ts));
+  }
   const el = h("div", { class: `msg-user${e.steer ? " steer" : ""}` });
   if (e.images?.length) {
     const imgs = h("div", { class: "imgs" });
@@ -411,12 +420,16 @@ function userBubble(e) {
   return h("div", { class: "user-wrap" }, el, when(e.ts));
 }
 
-/** A reply: boxes or Markdown, with its time. The latest one is drawn again with its answers pickable. */
+/**
+ * A reply: boxes or Markdown, the prototypes it links to (live, prototypes.js), its time. The latest one is drawn
+ * again with its answers pickable: only its text, so the prototypes' pages don't start over.
+ */
 function replyHolder(e) {
   const holder = h("div", { class: "msg-text" });
   const { el, sections } = renderReply(e.text);
-  holder.append(...[el, when(e.ts)].filter(Boolean));
-  holder.reply = { entry: e, sections };
+  const body = h("div", { class: "reply-body" }, el);
+  holder.append(...[body, prototypeEmbeds(e.text), when(e.ts)].filter(Boolean));
+  holder.reply = { entry: e, sections, body };
   return holder;
 }
 
@@ -441,7 +454,7 @@ function renderLatest() {
 
 function drawReply(l, pick) {
   const { el } = renderReply(l.entry.text, pick);
-  l.holder.replaceChildren(...[el, when(l.entry.ts)].filter(Boolean));
+  l.holder.reply.body.replaceChildren(el);
 }
 
 function picker() {
@@ -786,10 +799,8 @@ function setThread(t) {
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
   wsEl.title = ws.path ?? "";
-  const costBits = [];
-  if (t.costUsd) costBits.push(money(t.costUsd));
-  if (t.contextTokens) costBits.push(`${tokens(t.contextTokens)} context`);
-  $("cost").textContent = costBits.join(" · ");
+  $("cost").textContent = t.costUsd ? money(t.costUsd) : "";
+  renderContext(t);
   for (const id of t.pendingApprovals ?? []) state.pending.add(id);
   if (prev && prev.pendingApprovals?.join() !== t.pendingApprovals?.join()) {
     state.pending = new Set(t.pendingApprovals ?? []);
@@ -804,6 +815,19 @@ function setThread(t) {
 }
 
 const busy = (t) => t && (t.status === "running" || t.status === "starting" || t.status === "waiting");
+
+/** How full the context is: "42% context", the tokens in the tooltip; amber from 70%, red from 90%. */
+function renderContext(t) {
+  const el = $("context");
+  const c = t.context ?? (t.contextTokens ? { tokens: t.contextTokens, window: 200_000 } : null);
+  el.hidden = !c;
+  if (!c) return;
+  const percent = c.percent ?? Math.round((c.tokens / c.window) * 1000) / 10;
+  el.textContent = `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}% context`;
+  el.title = `${c.tokens.toLocaleString()} of ${c.window.toLocaleString()} tokens ` +
+    `(${tokens(c.tokens)} / ${tokens(c.window)})`;
+  el.className = `ctx${percent >= 90 ? " full" : percent >= 70 ? " high" : ""}`;
+}
 
 function short(p) {
   if (!p) return "";
@@ -1123,6 +1147,70 @@ function unifiedDiff(text) {
   return el;
 }
 
+// ------------------------------------------------------------------ concept nodes
+
+// The concept nodes this thread changed, mentioned or was linked to (`concepts__thread_nodes`): a ◇ N chip in the
+// header and a list under it, each opening the node in Concepts. Hidden without the concepts plugin, or with none.
+let conceptsTimer = null;
+function scheduleConcepts(ms = 1500) {
+  if (state.conceptNodes === false) return;
+  clearTimeout(conceptsTimer);
+  conceptsTimer = setTimeout(loadConcepts, ms);
+}
+
+async function loadConcepts() {
+  clearTimeout(conceptsTimer);
+  try {
+    const rows = await pluginCall("concepts", "thread_nodes", { thread: state.id });
+    state.conceptNodes = (Array.isArray(rows) ? rows : []).filter((r) => r?.id);
+  } catch (error) {
+    // No concepts plugin (or not allowed): hidden, and not asked again until concepts says something changed.
+    if (!(error instanceof ToolFailed)) state.conceptNodes = false;
+  }
+  renderConcepts();
+  if (state.conceptNodes !== false && busy(state.thread)) conceptsTimer = setTimeout(loadConcepts, 30_000);
+}
+
+const DID = { changed: "changed", linked: "linked", mentioned: "mentioned" };
+
+function renderConcepts() {
+  const nodes = state.conceptNodes || [];
+  const chip = $("concepts-chip");
+  const drawer = $("concepts");
+  chip.hidden = !nodes.length;
+  if (!nodes.length) {
+    drawer.hidden = true;
+    return;
+  }
+  chip.textContent = `◇ ${nodes.length}`;
+  chip.title = `${nodes.length} concept node${nodes.length === 1 ? "" : "s"} this thread touched`;
+  chip.classList.toggle("on", !drawer.hidden);
+  if (drawer.hidden) return;
+  const close = h("button", { class: "btn ghost small icon-only", title: "Close" }, icon("x", 13));
+  close.addEventListener("click", () => chip.click());
+  drawer.replaceChildren(h("div", { class: "c-head" }, `Concept nodes this thread touched · ${nodes.length}`,
+    h("span", { class: "grow" }), close), ...nodes.map((n) => {
+    const title = String(n.text ?? "").split("\n").find((l) => l.trim())?.trim() || "(empty)";
+    const row = h("button", { class: "c-node", title: `${title}\nOpen it in Concepts` },
+      h("span", { class: "c-title" }, title),
+      h("span", { class: `c-did ${n.did ?? ""}` }, DID[n.did] ?? n.did ?? ""),
+      n.note ? h("span", { class: "c-note", title: n.note }, n.note) : null);
+    row.addEventListener("click", () => void openLink(`layr://concepts/node/${encodeURIComponent(n.id)}`));
+    return row;
+  }));
+}
+
+$("concepts-chip").addEventListener("click", () => {
+  const drawer = $("concepts");
+  drawer.hidden = !drawer.hidden;
+  renderConcepts();
+  if (!drawer.hidden) void loadConcepts();
+});
+on("concepts:changed", () => {
+  if (state.conceptNodes === false) state.conceptNodes = undefined;
+  scheduleConcepts(2000);
+});
+
 // ------------------------------------------------------------------ composer
 
 function autosize() {
@@ -1387,4 +1475,5 @@ if (draftPicks.replyId && state.latest?.entry.id === draftPicks.replyId) {
 }
 void refreshTask();
 void loadChanges();
+void loadConcepts();
 input.focus();

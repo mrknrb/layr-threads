@@ -56,7 +56,7 @@ const demo = [
   { type: "tool_result", id: "tu6", content: "ok", isError: false },
   { type: "tool_use", id: "tu7", name: "mcp__layr__notes__list", input: { limit: 3 } },
   { type: "tool_result", id: "tu7", content: "[{\"title\":\"Groceries\"},{\"title\":\"Ideas\"}]", isError: false },
-  { type: "text", id: "m3:0", text: "Done. The list now has a **Sort** button:\n\n| Order | What it does |\n| --- | --- |\n| Newest | most recently changed first (default) |\n| A–Z | alphabetical by title |\n\nPinned notes stay on top in both. All 12 tests pass." },
+  { type: "text", id: "m3:0", text: "Done. The list now has a **Sort** button:\n\n| Order | What it does |\n| --- | --- |\n| Newest | most recently changed first (default) |\n| A–Z | alphabetical by title |\n\nPinned notes stay on top in both. All 12 tests pass.\n\nTwo ways it could look: [Sort button](layr://concepts/prototype/p-sort-1) and [Sort menu](layr://concepts/prototype/p-sort-2)." },
   { type: "turn_end", turn: 1, status: "done", costUsd: 0.0412, durationMs: 48200, usage: { inputTokens: 1200, outputTokens: 2300, cacheReadTokens: 15000, cacheWriteTokens: 2000 } },
   { type: "user", text: "Nice. Can you also ask me which icon to use?" },
   { type: "turn_start", turn: 2 },

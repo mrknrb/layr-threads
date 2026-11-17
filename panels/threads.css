@@ -28,11 +28,13 @@
 .row.active { background: var(--bg-3); }
 .row .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .row .time { font-size: 11.5px; color: var(--fg-dim); white-space: nowrap; }
-.row .sub { grid-column: 2 / 4; display: flex; gap: 6px; align-items: center; min-width: 0; font-size: 12px; color: var(--fg-dim); }
+.row .sub { grid-column: 2 / 4; display: flex; gap: 6px; align-items: center; min-width: 0; font-size: 12px;
+  color: var(--fg-dim); }
 .row .sub .prev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 .row .sub .badge { height: 18px; font-size: 11px; flex: none; max-width: 45%; }
 .row .sub .badge.wait { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
-.row .row-acts { position: absolute; right: 6px; top: 5px; display: none; gap: 2px; background: var(--bg-2); border-radius: 6px; }
+.row .row-acts { position: absolute; right: 6px; top: 5px; display: none; gap: 2px; background: var(--bg-2);
+  border-radius: 6px; }
 .row:hover .row-acts { display: flex; }
 .row:hover .time { visibility: hidden; }
 .row .input.rename { height: 24px; font-size: 13px; padding: 2px 6px; }
@@ -45,7 +47,8 @@
 #new-form .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 #new-form .grid > .wide { grid-column: 1 / 3; }
 #new-form .textarea { min-height: 84px; max-height: 260px; }
-.ws-choice { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 3px; }
+.ws-choice { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+  padding: 3px; }
 .ws-choice button { flex: 1; border: 0; background: transparent; border-radius: 5px; padding: 4px 6px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 12.5px; color: var(--fg-dim);
   white-space: nowrap; min-width: 0; }
@@ -55,7 +58,8 @@
 .inline-row { display: flex; gap: 6px; }
 .inline-row .input { flex: 1; }
 
-#foot { flex: none; border-top: 1px solid var(--border); padding: 6px 10px; display: flex; align-items: center; gap: 8px; }
+#foot { flex: none; border-top: 1px solid var(--border); padding: 6px 10px; display: flex; align-items: center;
+  gap: 8px; }
 #usage { flex: 1; display: flex; gap: 12px; min-width: 0; font-size: 11.5px; color: var(--fg-dim); }
 .meter { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .meter .bar { width: 46px; height: 5px; border-radius: 3px; background: var(--bg-3); overflow: hidden; }

@@ -115,14 +115,16 @@ a { color: var(--accent); }
 /* A right-click menu of our own, where the shell has none (ui.js) */
 .own-menu { position: fixed; z-index: 100; min-width: 180px; background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); display: flex; flex-direction: column; }
-.own-menu button { border: 0; background: none; text-align: left; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+.own-menu button { border: 0; background: none; text-align: left; padding: 5px 10px; border-radius: 5px;
+  cursor: pointer; }
 .own-menu button:hover:not(:disabled) { background: var(--bg-3); }
 .own-menu button.danger { color: var(--danger); }
 .own-menu .sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--fg-dim); }
 .error-box {
-  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
   color: var(--fg); border-radius: var(--radius); padding: 8px 12px; white-space: pre-wrap; word-break: break-word;
 }
 
@@ -136,7 +138,8 @@ a { color: var(--accent); }
 .md ul, .md ol { padding-left: 22px; }
 .md li { margin: 2px 0; }
 .md li > p { margin: 0; }
-.md code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-3); padding: 1px 5px; border-radius: 4px; }
+.md code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-3); padding: 1px 5px;
+  border-radius: 4px; }
 .md pre { position: relative; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 10px 12px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
@@ -162,7 +165,10 @@ a { color: var(--accent); }
 .diff .ln.add { background: var(--add-bg); } .diff .ln.add > .g, .diff .ln.add > .t { color: var(--add-fg); }
 .diff .ln.del { background: var(--del-bg); } .diff .ln.del > .g, .diff .ln.del > .t { color: var(--del-fg); }
 .diff .ln.gap { color: var(--fg-dim); background: var(--bg-2); }
-.diff-file { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); margin-bottom: 4px; word-break: break-all; }
-pre.block { margin: 0; font-family: var(--font-mono); font-size: 12px; background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 8px 10px; overflow: auto; max-height: 360px; white-space: pre-wrap; word-break: break-word; }
+.diff-file { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); margin-bottom: 4px;
+  word-break: break-all; }
+pre.block { margin: 0; font-family: var(--font-mono); font-size: 12px; background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; overflow: auto; max-height: 360px; white-space: pre-wrap;
+  word-break: break-word; }
 pre.block.error { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--del-fg); }

@@ -43,12 +43,13 @@ hub.events.on("event", (topic, data) => {
   topicsSeen.set(key, (topicsSeen.get(key) ?? 0) + 1);
 });
 
+let transport = null;
 async function startBackend() {
-  const transport = new StdioClientTransport({
+  transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(pluginDir, "backend", "server.js")],
     cwd: pluginDir,
-    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins") },
+    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins"), LAYR_CLAUDE_RESUME_DELAY_MS: "1500" },
     stderr: "pipe",
   });
   transport.stderr?.on("data", (d) => {
@@ -294,6 +295,50 @@ try {
   const endR = await runToEnd(thread.id);
   check(endR.thread.status === "done" && /hello\.txt/i.test(endR.last ?? ""), "resumed session remembers", endR.last);
 
+  if (!skip.has("kill")) {
+    step("the backend is killed mid-turn; the turn goes on by itself");
+    const marker = path.join(repo, "survived.txt");
+    const { thread: tk } = await call("thread_start", {
+      project: project.id,
+      prompt:
+        "Do these two steps in order. 1. Run this shell command and wait for it to finish: sleep 15 (with the Bash " +
+        "tool; on PowerShell: Start-Sleep 15). 2. Then create the file survived.txt containing exactly: yes. " +
+        "Reply with one word: done.",
+      permissionMode: "bypassPermissions",
+    });
+    let sleeping = false;
+    for (let i = 0; i < 120 && !sleeping; i++) {
+      const tr = await call("thread_transcript", { thread: tk.id, limit: 50 });
+      sleeping = tr.entries.some((e) => e.type === "tool_use" && /sleep/i.test(JSON.stringify(e.input ?? {})));
+      if (!sleeping) await new Promise((r) => setTimeout(r, 500));
+    }
+    check(sleeping, "the turn runs its command");
+    await new Promise((r) => setTimeout(r, 2000));
+    const before = (await call("thread_status", { thread: tk.id })).thread;
+    // As a crash would: no shutdown, nothing saved on the way out.
+    process.kill(transport.pid, "SIGKILL");
+    await client.close().catch(() => {});
+    await new Promise((r) => setTimeout(r, 1000));
+    check(!existsSync(marker), "nothing finished it while the backend was down");
+    const leftovers = claudeProcessesOf(before.sessionId);
+    if (leftovers !== null) {
+      for (let i = 0; i < 20 && claudeProcessesOf(before.sessionId) > 0; i++) await new Promise((r) => setTimeout(r, 500));
+      check(claudeProcessesOf(before.sessionId) === 0, "the old Claude Code process ended with the backend", leftovers);
+    }
+    client = await startBackend();
+    const st = (await call("thread_status", { thread: tk.id })).thread;
+    check(st.status === "starting" && st.resuming === true, "after the restart it waits to be picked up", st.status);
+    const endK = await runToEnd(tk.id, undefined, 300);
+    check(endK.thread.status === "done", "the turn was picked up and finished by itself", `${endK.thread.status} ${endK.last ?? ""}`);
+    check(existsSync(marker) && /yes/.test(readFileSync(marker, "utf8")), "it did the rest of the work (survived.txt)");
+    check(endK.thread.sessionId !== before.sessionId, "in a fork of the session", `${before.sessionId} → ${endK.thread.sessionId}`);
+    const trK = await call("thread_transcript", { thread: tk.id });
+    check(trK.entries.some((e) => e.type === "system" && e.subtype === "restart"), "the transcript says it restarted");
+    check(trK.entries.some((e) => e.type === "user" && e.auto === "restart"), "and that layr picked it up again");
+    const sleeps = trK.entries.filter((e) => e.type === "tool_use" && /sleep/i.test(JSON.stringify(e.input ?? {}))).length;
+    console.log(`  the sleep ran ${sleeps} time(s); last reply: ${endK.last}`);
+  }
+
   step("archive");
   const ar = await call("thread_archive", { thread: thread.id });
   check(ar.thread.archived === true, "archived");
@@ -314,6 +359,17 @@ try {
 }
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
+
+/** How many processes have the session id in their command line (Windows only; null elsewhere or when unknown). */
+function claudeProcessesOf(sessionId) {
+  if (process.platform !== "win32" || !sessionId) return null;
+  try {
+    const script = `@(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*${sessionId}*' }).Count`;
+    return Number(execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).trim());
+  } catch {
+    return null;
+  }
+}
 
 /** A solid red PNG, size×size. */
 function redPng(size) {
