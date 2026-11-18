@@ -32,6 +32,7 @@ import {
   contextMenu,
   copyText,
   onPhone,
+  onPipelineChange,
   openFolderOnPc,
   ToolFailed,
   openLink,
@@ -110,6 +111,8 @@ on(`claude:thread.${state.id}`, (ev) => {
   else handleEvent(ev);
 });
 on("pipeline:changed", () => void refreshTask());
+// The pipeline installed, removed, allowed or denied: the task strip, "+ Pipeline" and When Away follow, no reload.
+onPipelineChange(() => void refreshTask());
 
 // ------------------------------------------------------------------ loading
 

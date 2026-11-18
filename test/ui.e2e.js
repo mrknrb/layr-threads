@@ -240,6 +240,27 @@ try {
   await page.screenshot({ path: path.join(out, "18-row-menu.png") });
   await page.keyboard.press("Escape");
 
+  // The pipeline goes and comes back (layr:connections): the strip and 🌙 follow without a reload, and a pipeline
+  // that isn't usable isn't called.
+  await page.evaluate(() => {
+    localStorage.removeItem("mock-layr.pipeline");
+    localStorage.setItem("mock-layr.pipelineCalls", "[]");
+    return fetch("/dev/emit", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic: "layr:connections", data: { blocked: [] } }) });
+  });
+  await t2.locator("#task").waitFor({ state: "hidden", timeout: 10_000 });
+  check(!(await t2.locator("#away").isVisible()), "🌙 goes when the pipeline goes, no reload");
+  await page.waitForTimeout(500);
+  const goneCalls = await page.evaluate(() => JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]"));
+  check(goneCalls.length === 0, "an unusable pipeline isn't called", JSON.stringify(goneCalls));
+  await page.evaluate(() => {
+    localStorage.setItem("mock-layr.pipeline", "1");
+    return fetch("/dev/emit", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic: "layr:connections", data: { blocked: [] } }) });
+  });
+  await t2.locator("#task .task-id").waitFor({ timeout: 10_000 });
+  check(await t2.locator("#away").isVisible(), "🌙 comes back with the pipeline, no reload");
+
   // On a phone: no ▶ Run, no VS Code.
   await page.evaluate(() => {
     localStorage.setItem("mock-layr.phone", "1");

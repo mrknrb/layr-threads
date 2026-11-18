@@ -135,6 +135,14 @@
         opts?.plugin && opts.plugin !== "claude" ? fakePlugin(opts.plugin, tool, args ?? {}) : post("/dev/call", { tool, args: args ?? {}, plugin: opts?.plugin }),
       list: () => post("/dev/tools", {}),
     },
+    // Optional connections: the pipeline is usable while localStorage "mock-layr.pipeline" is "1" (emit
+    // layr:connections after changing it, as the core does after an install or an access change).
+    connections: {
+      get: async () => ({ blocked: false, reasons: [], connections: [{ plugin: "pipeline", required: false,
+        usable: localStorage.getItem("mock-layr.pipeline") === "1" }] }),
+      usable: async (plugin) => plugin === "pipeline" && localStorage.getItem("mock-layr.pipeline") === "1",
+      onChange: (fn) => window.layr.events.on("layr:connections", fn),
+    },
     events: {
       on(topic, fn) {
         const set = listeners.get(topic) ?? new Set();

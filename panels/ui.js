@@ -141,10 +141,42 @@ export function pluginCall(plugin, tool, args) {
 }
 
 /**
+ * Whether the optional connection to the pipeline can be used (installed and allowed), asked of layr once and again
+ * after `layr:connections`: false, or null when layr can't say (a core from before connections: just call).
+ */
+let pipelineUsable = null;
+let pipelineWatched = false;
+function pipelineReady() {
+  if (!pipelineWatched) {
+    pipelineWatched = true;
+    onPipelineChange(() => {});
+  }
+  pipelineUsable ??= Promise.resolve()
+    .then(() => window.layr.connections.usable("pipeline"))
+    .catch(() => null);
+  return pipelineUsable;
+}
+
+/** fn() whenever the pipeline may have come or gone (installed, removed, allowed, denied); returns a stop function. */
+export function onPipelineChange(fn) {
+  try {
+    const stop = window.layr?.connections?.onChange?.(() => {
+      pipelineUsable = null;
+      fn();
+    });
+    return typeof stop === "function" ? stop : () => {};
+  } catch {
+    return () => {};
+  }
+}
+
+/**
  * The pipeline task a thread belongs to (`pipeline__thread_task`): the task, null when it isn't one, or undefined
- * when there is no pipeline (not installed, too old, or not allowed).
+ * when there is no pipeline (not installed, too old, or not allowed). Asks layr first, so that an unallowed pipeline
+ * is never called (no access question just to find out).
  */
 export async function threadTask(threadId) {
+  if ((await pipelineReady()) === false) return undefined;
   try {
     const task = await pipelineCall("thread_task", { thread: threadId });
     return task && typeof task === "object" && task.number != null ? task : null;
