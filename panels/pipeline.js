@@ -1,7 +1,8 @@
 // The strip at the top of a thread that is a pipeline task (it replaces the pipeline's old Task page): `#N · column`
 // (opens the task in the pipeline), its title, the note or why, the brief (what / asks you / if wrong, stakes) to
-// unfold, the landing state and its problem, and the task's buttons (`pipeline__thread_action`), with an in-panel
-// confirm where a button asks for one. The task comes from `pipeline__thread_task` (ui.js threadTask).
+// unfold, the landing state and its problem, its toggles (📝 Plan, 🌙 When away: switches, `pipeline__thread_action`
+// toggle_plan / toggle_away; a pipeline without them gives none) and the task's buttons (`pipeline__thread_action`),
+// with an in-panel confirm where a button asks for one. The task comes from `pipeline__thread_task` (ui.js threadTask).
 import { h, icon, notify } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
 import { confirmIn, onPhone, openLink, pipelineCall } from "./ui.js";
@@ -11,6 +12,38 @@ const STAKES_TONE = { high: "danger", medium: "warn", low: "" };
 
 /** Keeps the brief open or closed across redraws (every refresh draws the strip anew). */
 let briefOpen = false;
+
+const TOGGLE = {
+  plan: { label: "📝 Plan", action: "toggle_plan",
+    about: "Plan: its worker only plans and asks; the work starts when you Approve. Off: an ordinary task's thread." },
+  whenAway: { label: "🌙 When away", action: "toggle_away",
+    about: "When away: what you send it (messages, answers, Approve) waits until you're Away. Off: messages that waited come back into the text box, unsent." },
+};
+
+/** A toggle switch of the task (`which`: plan or whenAway), or null when it has none. */
+function togglePill(task, which, threadId, onDone) {
+  const g = task.toggles?.[which];
+  if (!g || (which === "plan" && !g.on)) return null;
+  const t = TOGGLE[which];
+  const el = h("button", {
+    class: `toggle-pill ${which === "plan" ? "plan" : "away"}${g.on ? " on" : ""}`,
+    role: "switch",
+    "aria-checked": String(g.on),
+    title: `${t.about}${g.can ? "" : `\nCan't change now: ${g.why}`}`,
+  }, h("span", { class: "knob" }), t.label);
+  el.disabled = !g.can;
+  el.addEventListener("click", async () => {
+    el.disabled = true;
+    try {
+      await pipelineCall("thread_action", { thread: threadId, action: t.action, on: !g.on });
+    } catch (error) {
+      notify(`Pipeline: ${error.message}`, "error");
+    } finally {
+      onDone?.();
+    }
+  });
+  return el;
+}
 
 /** Draw `task` into `el` (hidden when null). `onDone()` after a button ran (to refresh). */
 export function renderTaskStrip(el, task, threadId, onDone) {
@@ -26,7 +59,7 @@ export function renderTaskStrip(el, task, threadId, onDone) {
   const note = task.note || task.why;
   const parts = [
     h("div", { class: "task-head" }, icon("list", 14), head,
-      task.planning ? h("span", { class: "chip warn", title: "The task's thread plans first" }, "planning") : null,
+      task.planning && !task.toggles ? h("span", { class: "chip warn", title: "The task's thread plans first" }, "planning") : null,
       task.stakes ? h("span", { class: `chip ${STAKES_TONE[task.stakes] ?? ""}`, title: "What's at stake if it's wrong" }, `stakes: ${task.stakes}`) : null,
       h("span", { class: "task-title" }, inlineMarkdown(task.title ?? ""))),
   ];
@@ -66,7 +99,8 @@ export function renderTaskStrip(el, task, threadId, onDone) {
     });
     return el2;
   });
-  const actions = h("div", { class: "task-actions" }, buttons);
-  if (buttons.length) parts.push(actions);
+  const toggles = ["plan", "whenAway"].map((w) => togglePill(task, w, threadId, onDone)).filter(Boolean);
+  const actions = h("div", { class: "task-actions" }, toggles, toggles.length && buttons.length ? h("span", { class: "grow" }) : null, buttons);
+  if (buttons.length || toggles.length) parts.push(actions);
   el.replaceChildren(...parts);
 }

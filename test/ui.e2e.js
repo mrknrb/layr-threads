@@ -211,6 +211,27 @@ try {
   const awayCalls = await page.evaluate(() => JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]"));
   check(awayCalls.some((c) => c.tool === "send" && c.args.number === 42 && c.args.whenAway === true && /tonight please/.test(c.args.text)),
     "🌙 sends with whenAway", JSON.stringify(awayCalls.filter((c) => c.tool === "send").at(-1)));
+  // Pipeline 0.7: 🌙 When away is the task's toggle, in the strip; Send follows it; off gives the message back.
+  await page.evaluate(() => localStorage.setItem("mock-layr.pipelineToggles", "1"));
+  await t2.locator("#task .btn", { hasText: "Settle" }).click();
+  await t2.locator("#task .toggle-pill.away").waitFor({ timeout: 5_000 });
+  check(!(await t2.locator("#away").isVisible()), "with toggles the composer's 🌙 button goes (the strip has the switch)");
+  await t2.locator("#task .toggle-pill.away").click();
+  await t2.locator("#task .toggle-pill.away.on").waitFor({ timeout: 5_000 });
+  check((await t2.locator("#send").textContent()) === "🌙 Send when away", "Send says it waits for Away");
+  await t2.locator("#input").fill("after dinner");
+  await t2.locator("#send").click();
+  await page.waitForTimeout(400);
+  const togCalls = await page.evaluate(() => JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]"));
+  check(togCalls.some((c) => c.tool === "thread_action" && c.args.action === "toggle_away" && c.args.on === true), "the switch ran toggle_away");
+  check(togCalls.filter((c) => c.tool === "send").at(-1)?.args.whenAway === undefined, "Send leaves it to the pipeline (no whenAway)");
+  await page.screenshot({ path: path.join(out, "17b-task-toggles.png") });
+  await t2.locator("#task .toggle-pill.away").click();
+  await page.waitForTimeout(800);
+  check((await t2.locator("#input").inputValue()).includes("after dinner"), "🌙 off: the unsent message is back in the text box", await t2.locator("#input").inputValue());
+  check(await page.evaluate(() => !localStorage.getItem("mock-layr.unsent")), "and the pipeline is told it was taken");
+  await t2.locator("#input").fill("");
+  await page.evaluate(() => localStorage.removeItem("mock-layr.pipelineToggles"));
   // The threads list: right-click a row that isn't a task.
   const list = page.frameLocator("#left iframe");
   await list.locator(".row", { hasText: "relay" }).click({ button: "right" });

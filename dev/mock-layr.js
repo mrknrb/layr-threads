@@ -39,7 +39,8 @@
   }
   /**
    * Other plugins' tools: none, unless localStorage "mock-layr.pipeline" is "1": then a fake pipeline whose task #42
-   * is the thread t_demo1 (calls are logged in localStorage "mock-layr.pipelineCalls").
+   * is the thread t_demo1 (calls are logged in localStorage "mock-layr.pipelineCalls"). "mock-layr.pipelineToggles"
+   * "1": it gives the task's toggles (pipeline 0.7); 🌙 off gives back "mock-layr.parked" as `unsent`.
    */
   async function fakePlugin(plugin, tool, args) {
     if (plugin === "concepts" && localStorage.getItem("mock-layr.concepts") === "1") return fakeConcepts(tool, args);
@@ -48,9 +49,28 @@
     calls.push({ tool, args });
     localStorage.setItem("mock-layr.pipelineCalls", JSON.stringify(calls));
     const reply = (v) => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v && typeof v === "object" ? v : { result: v } });
+    const toggles = localStorage.getItem("mock-layr.pipelineToggles") === "1";
+    const away = localStorage.getItem("mock-layr.away") === "1";
+    if (toggles && tool === "thread_action" && args.action === "toggle_away") {
+      localStorage.setItem("mock-layr.away", args.on ? "1" : "0");
+      if (!args.on && localStorage.getItem("mock-layr.parked")) {
+        localStorage.setItem("mock-layr.unsent", localStorage.getItem("mock-layr.parked"));
+        localStorage.removeItem("mock-layr.parked");
+      }
+      return reply({ ok: true });
+    }
+    if (toggles && tool === "thread_action" && args.action === "unsent_taken") {
+      localStorage.removeItem("mock-layr.unsent");
+      return reply({ ok: true });
+    }
+    if (toggles && tool === "send" && away) localStorage.setItem("mock-layr.parked", args.text);
     if (tool === "thread_task") {
       if (args.thread !== "t_demo1") return reply(null);
-      return reply({ number: 42, title: "Add sorting to the notes list", column: "stopped", why: "Notes are hard to find in long lists",
+      const extra = toggles
+        ? { toggles: { plan: { on: false, can: false, why: "it has started" }, whenAway: { on: away, can: true } },
+          ...(localStorage.getItem("mock-layr.unsent") ? { unsent: localStorage.getItem("mock-layr.unsent") } : {}) }
+        : {};
+      return reply({ ...extra, number: 42, title: "Add sorting to the notes list", column: "stopped", why: "Notes are hard to find in long lists",
         note: "Waits for your answers", link: "layr://pipeline/task/42",
         brief: { what: "A sort button: newest first, or A–Z.", asks: "Whether the order is remembered per notebook.", ifWrong: "The list order looks random." },
         stakes: "low", landing: { state: "waiting", problem: "the base moved on: rebase first" }, planning: false,
