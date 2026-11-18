@@ -10,6 +10,7 @@ import { z } from "zod";
 import { Account } from "./account.js";
 import { ASK_DEFAULT_MODEL, ask } from "./ask.js";
 import { autoCommit, lastPrompt } from "./autoCommit.js";
+import { BuildTimes } from "./buildTimes.js";
 import { fileDiff, threadChanges } from "./changes.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
@@ -33,7 +34,8 @@ const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB
 const account = new Account({
   onAccountChanged: () => hub.emit("claude:usage", { limits: account.limits, account: account.limitsAccount ?? null }),
 });
-const engine = new Engine({ store, hub, account });
+const buildTimes = new BuildTimes({ dataDir, store });
+const engine = new Engine({ store, hub, account, buildTimes });
 
 // After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
 // threads on a plugin link a plugin they made into layr and reload its Chrome extension, if it brings one.
@@ -539,6 +541,29 @@ tool(
 
 tool("plugins_folder", "Where new plugins made with AI go.", {}, () => ({ folder: pluginsRoot() }));
 
+// ------------------------------------------------------------------ build times
+
+tool(
+  "build_times",
+  "How long the builds, tests and checks Claude threads ran took (cargo, flutter, npm test, tsc, build scripts...), " +
+    "per project: each kind's runs, total, median and longest time, failures, timeouts, first runs in a folder " +
+    "(cold builds) apart from later ones; time per day; the threads that waited longest; the latest runs.",
+  {
+    project: z.string().optional().describe("A project's id or name (default: every project)"),
+    days: z.number().positive().optional().describe("Only the last so many days (default: all)"),
+    kind: z.string().optional().describe('Only one kind, e.g. "cargo test"'),
+  },
+  (a) => buildTimes.summary(a),
+);
+
+tool(
+  "build_times_import",
+  "Read past build and check runs from Claude Code's transcripts on this PC (only files that changed since the " +
+    "last time; all of them with all: true). Never changes the transcripts. Gives {files, added}.",
+  { all: z.boolean().optional() },
+  (a) => buildTimes.importTranscripts(undefined, { force: a.all === true }),
+);
+
 // ------------------------------------------------------------------ helpers
 
 /** Transcript entries as short messages for agents. */
@@ -588,6 +613,15 @@ async function main() {
   const delay = Number(process.env.LAYR_CLAUDE_RESUME_DELAY_MS ?? 3000);
   const resume = () => engine.resumeAfterRestart().catch((error) => log("picking turns up again:", errorMessage(error)));
   setTimeout(() => void resume(), delay);
+  // Past threads' build times, once: from Claude Code's transcripts (the panel can read them again).
+  if (!buildTimes.importState() && process.env.LAYR_CLAUDE_BUILD_IMPORT !== "0") {
+    const started = () =>
+      buildTimes.importTranscripts().then(
+        (r) => log(`build times: ${r.added} past runs from ${r.files} transcripts`),
+        (error) => log("build times import:", errorMessage(error)),
+      );
+    setTimeout(() => void started(), 30_000).unref?.();
+  }
 }
 
 let stopping = false;

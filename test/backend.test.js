@@ -49,7 +49,9 @@ async function startBackend() {
     command: process.execPath,
     args: [path.join(pluginDir, "backend", "server.js")],
     cwd: pluginDir,
-    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins"), LAYR_CLAUDE_RESUME_DELAY_MS: "1500" },
+    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins"), LAYR_CLAUDE_RESUME_DELAY_MS: "1500",
+      // Not the PC's own Claude Code transcripts (build times' first import): the test's timing stays its own.
+      LAYR_CLAUDE_BUILD_IMPORT: "0" },
     stderr: "pipe",
   });
   transport.stderr?.on("data", (d) => {

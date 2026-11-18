@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions, with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -16,11 +16,13 @@
   ],
   "panels": [
     { "id": "threads", "title": "Claude threads", "page": "panels/threads.html", "icon": "forum", "single": true },
-    { "id": "thread", "title": "Claude thread", "page": "panels/thread.html", "icon": "chat" }
+    { "id": "thread", "title": "Claude thread", "page": "panels/thread.html", "icon": "chat" },
+    { "id": "build-times", "title": "Build times", "page": "panels/buildtimes.html", "icon": "timer", "single": true }
   ],
   "commands": [
     { "id": "threads", "title": "Claude threads", "panel": "threads" },
     { "id": "new-thread", "title": "New Claude thread", "panel": "threads", "params": { "new": true } },
+    { "id": "build-times", "title": "Build times", "panel": "build-times" },
     { "id": "make-plugin", "title": "New plugin with Claude", "panel": "threads",
       "params": { "new": true, "target": "plugin", "plugin": "new" } },
     { "id": "new-extension", "title": "New Chrome extension with Claude", "panel": "threads",
@@ -29,6 +31,7 @@
   "menus": [
     { "menu": "Claude", "command": "new-thread", "group": "1" },
     { "menu": "Claude", "command": "threads", "group": "1" },
+    { "menu": "Claude", "command": "build-times", "group": "1" },
     { "menu": "Claude", "command": "make-plugin", "group": "2" },
     { "menu": "Claude", "command": "new-extension", "group": "2" },
     { "menu": "Tools", "command": "make-plugin", "group": "9" }
@@ -65,6 +68,9 @@
       { "id": "approve", "label": "Answer threads' permission requests and change their permissions",
         "tools": ["answer_approval", "thread_update"], "events": ["claude:approval"],
         "defaults": { "plugin:pipeline": "allow" } },
+      { "id": "build-times", "label": "See how long the builds, tests and checks threads run take",
+        "tools": ["build_times", "build_times_import"],
+        "defaults": { "plugins": "allow", "agents": "allow" } },
       { "id": "pc", "label": "Open terminal windows running commands, and folders, on your PC",
         "tools": ["run_in_terminal", "open_folder"] }
     ]

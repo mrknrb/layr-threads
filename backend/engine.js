@@ -85,10 +85,12 @@ You are running inside layr, the user's workbench app, as one of its Claude Code
 and layr's own tools (mcp__layr__layr__*): use them when the user asks for something a plugin does.`;
 
 export class Engine {
-  constructor({ store, hub, account }) {
+  /** `buildTimes`: times the builds and checks threads run (buildTimes.js); optional. */
+  constructor({ store, hub, account, buildTimes = null }) {
     this.store = store;
     this.hub = hub;
     this.account = account;
+    this.buildTimes = buildTimes;
     /** @type {Map<string, Live>} live queries by thread id */
     this.lives = new Map();
     /** thread id → Set of functions called on every status change (thread_wait) */
@@ -902,6 +904,7 @@ export class Engine {
   }
 
   handleSystem(meta, live, msg) {
+    if (msg.subtype === "task_notification" && msg.tool_use_id) this.buildTimes?.backgroundDone(msg.tool_use_id, msg.status);
     if (msg.subtype === "init") {
       live.sawInit = true;
       live.model = msg.model;
@@ -1022,6 +1025,7 @@ export class Engine {
         const inputText = JSON.stringify(block.input ?? {});
         const input = inputText.length > TOOL_INPUT_MAX ? { _truncated: truncate(inputText, TOOL_INPUT_MAX) } : block.input;
         this.addEntry(meta, { type: "tool_use", id: block.id, name: block.name, input, ...(parent ? { parent } : {}) });
+        this.buildTimes?.toolStarted(meta, block);
         if (block.name === "TodoWrite" && Array.isArray(block.input?.todos) && !parent) {
           const todos = block.input.todos.map((t) => ({ content: t.content, status: t.status, activeForm: t.activeForm }));
           this.store.updateThread(meta.id, { todos });
@@ -1055,6 +1059,7 @@ export class Engine {
           else if (c.type === "image") images++;
         }
       }
+      this.buildTimes?.toolFinished(block.tool_use_id, text, block.is_error === true);
       this.addEntry(meta, {
         type: "tool_result",
         id: block.tool_use_id,
@@ -1133,6 +1138,7 @@ export class Engine {
         live.approvals.delete(requestId);
         opts?.signal?.removeEventListener?.("abort", onAbort);
         const result = this.permissionResult(meta, live, entry, toolInput, opts, answer);
+        if (result.behavior === "allow" && entry.toolUseId) this.buildTimes?.toolApproved(entry.toolUseId);
         this.addEntry(meta, {
           type: "approval_answer",
           requestId,

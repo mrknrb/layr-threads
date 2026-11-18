@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build times</title>
+  <link rel="stylesheet" href="/_layr/layr.css">
+  <link rel="stylesheet" href="claude.css">
+  <link rel="stylesheet" href="buildtimes.css">
+  <script src="/_layr/layr.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header id="top">
+      <h1>Build times</h1>
+      <select id="project" class="input" title="Project"></select>
+      <select id="days" class="input" title="Period">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="">All time</option>
+      </select>
+      <button class="btn ghost small icon-only" id="refresh" title="Refresh"></button>
+    </header>
+    <main id="list"><div class="empty">Loading…</div></main>
+    <footer id="foot">
+      <span id="imported"></span>
+      <button class="btn ghost small" id="import" title="Read Claude Code's transcripts on this PC again">Read past threads again</button>
+    </footer>
+  </div>
+  <script type="module" src="buildtimes.js"></script>
+</body>
+</html>
