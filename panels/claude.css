@@ -127,6 +127,7 @@ a { color: var(--accent); }
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   color: var(--fg); border-radius: var(--radius); padding: 8px 12px; white-space: pre-wrap; word-break: break-word;
 }
+.error-box .actions { margin-top: 8px; white-space: normal; }
 
 /* Markdown */
 .md { word-wrap: break-word; overflow-wrap: anywhere; }

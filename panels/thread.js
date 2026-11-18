@@ -351,10 +351,25 @@ function addEntry(e, { into = main } = {}) {
       }
       return kept(h("div", { class: `sys${e.subtype === "background_lost" ? " warn" : ""}` }, e.text));
     case "error":
-      return kept(h("div", { class: "error-box" }, e.message));
+      return kept(e.retry ? retryBox(e) : h("div", { class: "error-box" }, e.message));
     default:
       return null;
   }
+}
+
+/** A failure the thread can get over by sending its last message again (Claude Code couldn't read its config). */
+function retryBox(e) {
+  const again = h("button", { class: "btn small primary" }, icon("refresh", 14), "Try again");
+  again.addEventListener("click", async () => {
+    again.disabled = true;
+    try {
+      await call("thread_retry", { thread: state.id });
+    } catch (error) {
+      notify(error.message, "error");
+      again.disabled = false;
+    }
+  });
+  return h("div", { class: "error-box" }, e.message, h("div", { class: "actions" }, again));
 }
 
 /** Entries of a subagent go inside its Task card. */

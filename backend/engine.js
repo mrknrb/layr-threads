@@ -13,6 +13,9 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
+import { CONFIG_RETRY_MS, configEmpty, isConfigBroken, repairEmptyConfig, restoreHint } from "./claudeConfig.js";
+import { existsSync } from "node:fs";
+import os from "node:os";
 import { createWorktree, currentBranch, isGitRepo } from "./git.js";
 import { threadSettings } from "./threadSettings.js";
 import {
@@ -85,12 +88,27 @@ You are running inside layr, the user's workbench app, as one of its Claude Code
 and layr's own tools (mcp__layr__layr__*): use them when the user asks for something a plugin does.`;
 
 export class Engine {
-  /** `buildTimes`: times the builds and checks threads run (buildTimes.js); optional. */
-  constructor({ store, hub, account, buildTimes = null }) {
+  /**
+   * `buildTimes`: times the builds and checks threads run (buildTimes.js); optional. `config`: how a thread copes with
+   * Claude Code's global config being unreadable (tests pass fakes): `retryMs` (the waits before each try again),
+   * `empty()`, `hint()` (restoreHint), `repair()` (repairEmptyConfig), `repairOn()` (the setting `repairConfig`, off by
+   * default).
+   */
+  constructor({ store, hub, account, buildTimes = null, config = {} }) {
     this.store = store;
     this.hub = hub;
     this.account = account;
     this.buildTimes = buildTimes;
+    this.config = {
+      retryMs: CONFIG_RETRY_MS,
+      empty: () => configEmpty(),
+      hint: () => restoreHint(),
+      repair: () => repairEmptyConfig(),
+      repairOn: async () => (await this.hub.settingsGet?.("repairConfig").catch(() => false)) === true,
+      ...config,
+    };
+    /** thread id → the timer of its next try after Claude Code couldn't read its config */
+    this.configTimers = new Map();
     /** @type {Map<string, Live>} live queries by thread id */
     this.lives = new Map();
     /** thread id → Set of functions called on every status change (thread_wait) */
@@ -117,7 +135,14 @@ export class Engine {
    */
   recover() {
     this.toResume = [];
+    this.toRetryConfig = [];
     for (const meta of Object.values(this.store.threads)) {
+      if (meta.configRetry && meta.status === "starting" && !meta.archived) {
+        // It waited to try its turn again (Claude Code couldn't read its config): it goes on waiting.
+        this.toRetryConfig.push(meta.id);
+        continue;
+      }
+      if (meta.configRetry) this.store.updateThread(meta.id, { configRetry: null });
       if (meta.background?.length) this.backgroundLost(meta, meta.background, "the Claude engine restarted");
       const ran = meta.status === "running" || meta.status === "waiting" || meta.status === "starting";
       if (ran || meta.restartResume) {
@@ -157,6 +182,7 @@ export class Engine {
 
   /** The threads recover() set aside, picked up again: each resumes its session with a note (or its first prompt). */
   async resumeAfterRestart() {
+    for (const id of (this.toRetryConfig ?? []).splice(0)) this.scheduleConfigRetry(id, this.config.retryMs[0]);
     for (const id of (this.toResume ?? []).splice(0)) {
       const meta = this.store.thread(id);
       if (!meta?.restartResume || meta.status !== "starting" || this.lives.has(id)) continue;
@@ -337,6 +363,13 @@ export class Engine {
 
   async interrupt(id) {
     const meta = this.requireThread(id);
+    if (this.cancelConfigRetry(id) && !this.lives.get(id)?.turnActive) {
+      this.store.append(id, { type: "system", text: "Stopped: not trying again." });
+      this.emitEntry(id, this.lastEntry);
+      this.store.updateThread(id, { status: "interrupted" });
+      this.emitThread(meta);
+      return { interrupted: true, thread: this.summary(meta) };
+    }
     const live = this.lives.get(id);
     if (!live || !live.turnActive) return { interrupted: false, thread: this.summary(meta) };
     live.interruptRequested = true;
@@ -415,6 +448,7 @@ export class Engine {
   archive(id, archived = true) {
     const meta = this.requireThread(id);
     if (archived) {
+      if (this.cancelConfigRetry(id)) this.store.updateThread(id, { status: "interrupted" });
       const live = this.lives.get(id);
       if (live?.turnActive) void this.interrupt(id).catch(() => {});
       this.closeLive(id, "archived");
@@ -472,6 +506,7 @@ export class Engine {
       todos: meta.todos,
       background: meta.background ?? [],
       resuming: Boolean(meta.restartResume),
+      retrying: meta.configRetry ? { tries: meta.configTries ?? 1, since: meta.configRetry.at } : null,
       queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at })),
       queuePaused: meta.queuePaused,
       pendingApprovals: meta.pendingApprovals,
@@ -530,17 +565,22 @@ export class Engine {
    * Start a turn now: open the query when needed and push the message. `auto`: not the user's ("restart": the
    * engine picks a cut-off turn up again); `fork`: a new query resumes into a fork of the session (resumeAfterRestart).
    */
-  async dispatch(meta, { text, images, savedImages, auto, fork = false }) {
+  async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false }) {
+    this.cancelConfigRetry(meta.id);
     const message = this.userMessage(meta, { text, images, savedImages });
     let live = this.lives.get(meta.id);
     if (live?.needsRestart && this.canClose(live)) {
       this.closeLive(meta.id, "restart for new settings");
       live = null;
     }
-    this.store.append(meta.id, { type: "user", text: message.text, images: message.images, ...(auto ? { auto } : {}) });
-    this.emitEntry(meta.id, this.lastEntry);
+    // `again`: the same message once more (after Claude Code couldn't start): it is in the transcript already.
+    if (!again) {
+      this.store.append(meta.id, { type: "user", text: message.text, images: message.images, ...(auto ? { auto } : {}) });
+      this.emitEntry(meta.id, this.lastEntry);
+    }
     if (!meta.title || meta.title === "New thread") this.store.updateThread(meta.id, { title: titleFromPrompt(text) });
     if (!live) live = await this.openLive(meta, { fork });
+    live.turnInput = { text: message.text, images: message.images, fork };
     this.beginTurn(meta, live);
     this.tellLostBackground(meta, message.sdk);
     live.input.push(message.sdk);
@@ -700,6 +740,164 @@ export class Engine {
     }
   }
 
+  // ---------------------------------------------------------------- Claude Code's config unreadable
+
+  /**
+   * Claude Code stopped before it started, because its global config (`~/.claude.json`) couldn't be read: another
+   * Claude Code left it empty while rewriting it. The session is untouched, so the turn's message is sent again in it,
+   * after each wait of config.retryMs; the thread waits as "starting" meanwhile (messages sent queue, Stop cancels).
+   * After the last one it fails, saying how to fix the file, and offers Try again (retry()).
+   */
+  configBroken(meta, live, detail) {
+    if (live.configBroken) return;
+    live.configBroken = true;
+    const turnInput = live.turnInput ?? this.lastUserInput(meta.id);
+    const tries = (meta.configTries ?? 0) + 1;
+    const delays = this.config.retryMs;
+    const empty = this.config.empty();
+    const what = empty ? "it was empty: another Claude Code was probably rewriting it" : "it is not valid JSON";
+    log(`thread ${meta.id}: Claude Code couldn't read its config (try ${tries}): ${String(detail).split("\n")[0]}`);
+    live.turnActive = false;
+    this.flushDeltas(meta.id);
+    this.store.append(meta.id, {
+      type: "turn_end",
+      turn: meta.turns,
+      status: "failed",
+      subtype: "config_unreadable",
+      error: `Claude Code couldn't read its settings file ~/.claude.json (${what})`,
+      costUsd: 0,
+      durationMs: live.turnStartedAt ? Date.now() - live.turnStartedAt : null,
+      usage: null,
+      numTurns: 0,
+    });
+    this.emitEntry(meta.id, this.lastEntry);
+    this.closeLive(meta.id, "Claude Code couldn't read its config");
+    if (tries <= delays.length && turnInput) {
+      const wait = delays[tries - 1];
+      this.store.updateThread(meta.id, {
+        status: "starting",
+        error: null,
+        pendingApprovals: [],
+        configTries: tries,
+        configRetry: { ...turnInput, at: nowIso() },
+      });
+      this.store.append(meta.id, {
+        type: "system",
+        subtype: "config_retry",
+        text: `Trying again in ${waitText(wait)} (${tries} of ${delays.length}); the conversation is safe.`,
+      });
+      this.emitEntry(meta.id, this.lastEntry);
+      this.emitThread(meta);
+      this.scheduleConfigRetry(meta.id, wait);
+      return;
+    }
+    void this.giveUpOnConfig(meta, tries - 1, empty);
+  }
+
+  /** No more tries: the thread fails, saying how to fix the file; Try again (retry()) sends its message again. */
+  async giveUpOnConfig(meta, tries, empty) {
+    const hint = await Promise.resolve(this.config.hint()).catch(() => null);
+    const lines = [
+      tries
+        ? `Claude Code still couldn't read its settings file after ${tries} tries.`
+        : "Claude Code couldn't read its settings file.",
+      `The file: ${hint?.configPath ?? "~/.claude.json"}${empty ? " (it is empty)" : ""}. The conversation is safe: ` +
+        "press Try again once the file is fixed.",
+    ];
+    if (hint?.command) lines.push(`To fix it, put Claude Code's newest backup back:\n${hint.command}`);
+    lines.push('Or turn on "Repair an empty ~/.claude.json" in the Claude Code plugin\'s settings.');
+    this.store.append(meta.id, { type: "error", subtype: "config_unreadable", message: lines.join("\n"), retry: true });
+    this.emitEntry(meta.id, this.lastEntry);
+    this.store.updateThread(meta.id, {
+      status: "failed",
+      error: "Claude Code couldn't read ~/.claude.json",
+      configTries: 0,
+      configRetry: null,
+    });
+    this.notifyUser(meta, `Claude thread failed: ${meta.title} (Claude Code couldn't read ~/.claude.json)`, "error");
+    this.emitThread(meta);
+    this.onTurnEnded?.(meta, "failed");
+  }
+
+  scheduleConfigRetry(id, wait) {
+    clearTimeout(this.configTimers.get(id));
+    const timer = setTimeout(() => {
+      this.configTimers.delete(id);
+      void this.retryConfigTurn(id);
+    }, wait);
+    timer.unref?.();
+    this.configTimers.set(id, timer);
+  }
+
+  /** The waiting turn, sent again; with the setting on, an empty config is put back from Claude Code's backup first. */
+  async retryConfigTurn(id) {
+    const meta = this.store.thread(id);
+    const pending = meta?.configRetry;
+    if (!pending || meta.status !== "starting" || meta.archived || this.lives.has(id)) return;
+    const repaired = await this.repairConfig();
+    if (repaired) {
+      this.store.append(id, { type: "system", subtype: "config_repaired", text: repaired });
+      this.emitEntry(id, this.lastEntry);
+    }
+    if (this.store.thread(id)?.configRetry !== pending) return; // stopped or sent meanwhile
+    try {
+      await this.dispatch(meta, { text: pending.text, savedImages: pending.images ?? [], fork: pending.fork, again: true });
+    } catch (error) {
+      this.fail(meta, error);
+    }
+  }
+
+  /**
+   * With the setting `repairConfig` on (off by default): an empty `~/.claude.json` is put back from Claude Code's
+   * newest backup (repairEmptyConfig says when it may). Gives what was done, for the transcript, or null.
+   */
+  async repairConfig() {
+    if (!this.config.empty() || !(await Promise.resolve(this.config.repairOn()).catch(() => false))) return null;
+    const r = await Promise.resolve(this.config.repair()).catch((error) => ({ repaired: false, why: errorMessage(error) }));
+    if (!r.repaired) {
+      log(`~/.claude.json not repaired: ${r.why}`);
+      return null;
+    }
+    const text = `Put ~/.claude.json back from Claude Code's backup ${r.backup} (the file was empty).`;
+    log(text);
+    this.hub.notify?.(`Claude Code: ${text}`, "info");
+    return text;
+  }
+
+  /** Stop waiting to try again: whether a try was waiting. */
+  cancelConfigRetry(id) {
+    const timer = this.configTimers.get(id);
+    clearTimeout(timer);
+    this.configTimers.delete(id);
+    const meta = this.store.thread(id);
+    if (!meta?.configRetry) return Boolean(timer);
+    this.store.updateThread(id, { configRetry: null });
+    return true;
+  }
+
+  /** The thread's last message, as dispatch() takes it again: {text, images} or null. */
+  lastUserInput(id) {
+    const last = this.store.readTranscript(id).findLast((e) => e.type === "user");
+    return last ? { text: last.text ?? "", images: last.images ?? [] } : null;
+  }
+
+  /** Try again: the thread's last message sent once more, in the same session (a turn that failed or was stopped). */
+  async retry(id) {
+    const meta = this.requireThread(id);
+    if (this.lives.get(id)?.turnActive || meta.status === "running" || meta.status === "waiting") {
+      throw new Error("The thread is running: wait for its turn to end, or stop it first");
+    }
+    const last = this.lastUserInput(id);
+    if (!last) throw new Error("The thread has no message to send again");
+    this.cancelConfigRetry(id);
+    if (meta.archived) this.store.updateThread(id, { archived: false });
+    this.store.updateThread(id, { configTries: 0 });
+    this.store.append(id, { type: "system", text: "Trying again." });
+    this.emitEntry(id, this.lastEntry);
+    await this.dispatch(meta, { text: last.text, savedImages: last.images, again: true });
+    return this.summary(meta);
+  }
+
   // ---------------------------------------------------------------- the query
 
   /**
@@ -799,6 +997,11 @@ export class Engine {
       if (live.turnActive) this.endTurn(meta, live, { subtype: live.interruptRequested ? "interrupted" : "ended", interrupted: live.interruptRequested, isError: !live.interruptRequested, error: "Claude Code stopped" });
     } catch (error) {
       const text = errorMessage(error);
+      if (live.configBroken) return;
+      if (isConfigBroken(text) && !live.closed && !live.sawOutput && live.turnActive) {
+        this.configBroken(meta, live, text);
+        return;
+      }
       if (resumed && isSessionGone(text) && !live.closed && !live.sawOutput) {
         await this.restartFresh(meta, live);
         return;
@@ -828,10 +1031,30 @@ export class Engine {
 
   /** Claude Code prunes old transcripts: start a new session with the conversation so far in the prompt. */
   async restartFresh(meta, live) {
-    log(`session of ${meta.id} is gone, starting over`);
     const wasActive = live.turnActive;
     live.turnActive = false;
     this.closeLive(meta.id, "session gone");
+    // An earlier session of the thread that is still on disk: resumed instead of starting over.
+    const earlier = (meta.earlierSessions ?? []).find((s) => s !== meta.sessionId && existsSync(sessionFile(meta.cwd, s)));
+    if (earlier) {
+      log(`session ${meta.sessionId} of ${meta.id} is gone, resuming its earlier one ${earlier}`);
+      this.store.updateThread(meta.id, {
+        sessionId: earlier,
+        earlierSessions: (meta.earlierSessions ?? []).filter((s) => s !== earlier),
+      });
+      try {
+        const back = await this.openLive(meta);
+        back.turnActive = wasActive;
+        back.turnStartedAt = live.turnStartedAt;
+        back.turnInput = live.turnInput;
+        const input = live.turnInput ?? this.lastUserInput(meta.id);
+        back.input.push(this.userMessage(meta, { text: input?.text ?? "", savedImages: input?.images ?? [] }).sdk);
+      } catch (error) {
+        this.fail(meta, error);
+      }
+      return;
+    }
+    log(`session of ${meta.id} is gone, starting over`);
     this.store.append(meta.id, { type: "system", text: "The old Claude session was gone; started a new one with the conversation so far." });
     this.emitEntry(meta.id, this.lastEntry);
     try {
@@ -880,7 +1103,13 @@ export class Engine {
 
   handle(meta, live, msg) {
     const id = meta.id;
-    if (msg.session_id && msg.session_id !== meta.sessionId) this.store.updateThread(id, { sessionId: msg.session_id });
+    // Only a session Claude Code started or resumed (its init): a process failing before that (its config unreadable)
+    // still reports a session id of its own, which has no transcript, and taking it would lose the conversation.
+    const init = msg.type === "system" && msg.subtype === "init";
+    if (msg.session_id && msg.session_id !== meta.sessionId && (init || live.sawInit)) {
+      const earlier = [meta.sessionId, ...(meta.earlierSessions ?? [])].filter((s) => s && s !== msg.session_id);
+      this.store.updateThread(id, { sessionId: msg.session_id, earlierSessions: [...new Set(earlier)].slice(0, 5) });
+    }
     switch (msg.type) {
       case "system":
         return this.handleSystem(meta, live, msg);
@@ -910,7 +1139,11 @@ export class Engine {
       live.model = msg.model;
       // Only real failures: servers waiting for a sign-in (claude.ai connectors) are the user's to fix in Claude.
       const failed = (msg.mcp_servers ?? []).filter((s) => s.status === "failed" || (s.name === "layr" && s.status !== "connected" && s.status !== "pending"));
-      this.store.updateThread(meta.id, { sessionStarted: true, resolvedModel: msg.model });
+      this.store.updateThread(meta.id, {
+        sessionStarted: true,
+        resolvedModel: msg.model,
+        ...(meta.configTries ? { configTries: 0 } : {}),
+      });
       if (!live.loggedInit) {
         live.loggedInit = true;
         this.store.append(meta.id, {
@@ -1072,6 +1305,11 @@ export class Engine {
   }
 
   handleResult(meta, live, msg) {
+    const errors = (msg.errors ?? []).join("\n") || (msg.is_error ? String(msg.result ?? "") : "");
+    if (!live.sawOutput && (msg.subtype !== "success" || msg.is_error === true) && isConfigBroken(errors)) {
+      this.configBroken(meta, live, errors);
+      return;
+    }
     if (live.resumed && !live.sawOutput && msg.subtype !== "success" && isSessionGone((msg.errors ?? []).join("\n"))) {
       void this.restartFresh(meta, live);
       return;
@@ -1370,6 +1608,16 @@ export function restartNote(at, waiting) {
     (waiting ? " You were waiting for the user's permission or answer then: ask again if you still need it." : "") +
     "]"
   );
+}
+
+/** Where Claude Code keeps a session's transcript: `<config home>/projects/<the folder, as a name>/<id>.jsonl`. */
+export function sessionFile(cwd, sessionId, env = process.env) {
+  const home = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  return path.join(home, "projects", String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
+}
+
+function waitText(ms) {
+  return ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
 }
 
 function isSessionGone(text) {

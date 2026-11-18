@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions, with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -40,7 +40,10 @@
   "links": [ { "path": "thread", "panel": "thread", "param": "thread" } ],
   "settings": [
     { "id": "notifications", "type": "boolean", "title": "Notify when a thread finishes or needs you",
-      "description": "Not for archived threads, nor for background ones (permission mode dontAsk).", "default": true }
+      "description": "Not for archived threads, nor for background ones (permission mode dontAsk).", "default": true },
+    { "id": "repairConfig", "type": "boolean", "title": "Repair an empty ~/.claude.json",
+      "description": "Claude Code's settings file is sometimes left empty while many Claude Codes run, and none can start then. Threads always wait and try again; with this on, layr also puts back Claude Code's newest backup (at most a day old), only while the file has been empty for 30 s.",
+      "default": false }
   ],
   "backend": {
     "kind": "process",
@@ -62,7 +65,7 @@
       { "id": "ask", "label": "Ask Claude one-off questions (uses your plan)", "tools": ["ask"],
         "defaults": { "plugin:pipeline": "allow", "plugin:concepts": "allow" } },
       { "id": "run", "label": "Start, steer and stop threads; change projects",
-        "tools": ["thread_start", "thread_send", "thread_interrupt", "thread_archive", "thread_queue", "project_add",
+        "tools": ["thread_start", "thread_send", "thread_interrupt", "thread_retry", "thread_archive", "thread_queue", "project_add",
                   "project_update", "project_remove", "plugin_make"],
         "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow", "plugin:care": "allow" } },
       { "id": "approve", "label": "Answer threads' permission requests and change their permissions",

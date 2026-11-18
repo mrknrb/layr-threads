@@ -4,12 +4,15 @@
 // haiku by default.
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import os from "node:os";
+import { isConfigBroken } from "./claudeConfig.js";
 import { claudeEnv } from "./claudeEnv.js";
 
 export const ASK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 export const ASK_DEFAULT_MODEL = "haiku";
 const PROMPT_MAX = 200_000;
 const TIMEOUT_MS = 5 * 60_000;
+/** Claude Code couldn't read its config (`~/.claude.json` left empty by another one): asked again after these waits. */
+export const ASK_CONFIG_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
 
 /** Check the arguments (the tool's schema checks them too); gives them cleaned or throws why not. */
 export function askArgs(a) {
@@ -45,10 +48,23 @@ export function askOptions({ system, model, effort }) {
 
 /**
  * Ask once and give `{text, model, usage?}`. `query`: the SDK's (tests pass a fake with the same shape: a function
- * of {prompt, options} giving an async iterable of SDK messages with close()).
+ * of {prompt, options} giving an async iterable of SDK messages with close()). When Claude Code couldn't read its
+ * config it is asked again after each of `retryMs`, `beforeRetry()` first (the engine's repairConfig).
  */
-export async function ask(input, { query = sdkQuery, timeoutMs = TIMEOUT_MS } = {}) {
+export async function ask(input, { query = sdkQuery, timeoutMs = TIMEOUT_MS, retryMs = ASK_CONFIG_RETRY_MS, beforeRetry } = {}) {
   const a = askArgs(input);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await askOnce(a, { query, timeoutMs });
+    } catch (error) {
+      if (attempt >= retryMs.length || !isConfigBroken(error?.message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryMs[attempt]));
+      await Promise.resolve(beforeRetry?.()).catch(() => {});
+    }
+  }
+}
+
+async function askOnce(a, { query, timeoutMs }) {
   const q = query({ prompt: a.prompt, options: askOptions(a) });
   let timer;
   const timeout = new Promise((_, reject) => {

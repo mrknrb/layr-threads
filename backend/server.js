@@ -294,6 +294,13 @@ tool("thread_interrupt", "Stop the thread's running turn (the session stays; que
 );
 
 tool(
+  "thread_retry",
+  "Try again: send the thread's last message once more, in the same session (after a turn failed or was stopped).",
+  { thread: threadId },
+  (a) => engine.retry(a.thread),
+);
+
+tool(
   "thread_list",
   "Threads, latest activity first, with status: running, waiting (for an approval or answer), done, failed, interrupted.",
   {
@@ -508,7 +515,7 @@ tool(
     model: z.string().optional().describe(`opus, sonnet, haiku or an id (default ${ASK_DEFAULT_MODEL})`),
     effort: effort.optional(),
   },
-  (a) => ask(a),
+  (a) => ask(a, { beforeRetry: () => engine.repairConfig() }),
 );
 
 // ------------------------------------------------------------------ plugin maker
