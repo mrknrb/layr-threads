@@ -1252,7 +1252,7 @@ export class Engine {
 
   /**
    * A layr notification that a thread finished or waits for the user; not for archived threads, nor for background
-   * ones (permission mode dontAsk: a pipeline's scouts, refiner, orchestrator), nor when the plugin's setting
+   * ones (permission mode dontAsk: a pipeline's scouts and orchestrator), nor when the plugin's setting
    * `notifications` is off.
    */
   notifyUser(meta, text, kind) {
