@@ -102,11 +102,11 @@ const work = (name) => ({ kind: "tool", name });
 const end = (status, extra = {}) => ({ kind: "end", entry: { status, durationMs: 192_000, usage: { inputTokens: 1000,
   cacheReadTokens: 770_000, cacheWriteTokens: 6000, outputTokens: 2900 }, ...extra } });
 
-test("folds: a finished turn folds its work, keeps the final reply and what must stay", () => {
+test("folds: a finished turn folds its work, keeps every reply and what must stay", () => {
   const items = [work("Read"), { kind: "thinking" }, { kind: "text" }, work("Bash"), { kind: "kept" }, { kind: "text" },
     end("done")];
   const fold = foldTurn(items);
-  assert.deepEqual([...fold.hidden].sort(), [0, 1, 2, 3, 6]);
+  assert.deepEqual([...fold.hidden].sort(), [0, 1, 3, 6]);
   assert.equal(fold.label, "Worked for 3m 12s · 777k tokens in · 2.9k out");
   // Not ended: nothing folds. Nothing but a reply: nothing to fold.
   assert.equal(foldTurn(items.slice(0, -1)), null);

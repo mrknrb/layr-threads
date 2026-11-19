@@ -1,5 +1,5 @@
-// What of a turn the thread panel shows, the way T3 Code folds it: a finished turn keeps your message and its final
-// reply, and the work in between (tool calls, thinking, replies on the way) folds into one row, "Worked for 3m 12s ·
+// What of a turn the thread panel shows, the way T3 Code folds it: a finished turn keeps your message and every reply
+// it gave you, and the work in between (tool calls, thinking) folds into one row, "Worked for 3m 12s ·
 // 777k tokens in · 2.9k out". Tool calls in a row become one "Read 4 files, ran 2 commands" row. Both open on a
 // click; errors, plans, questions and notices always stay in sight. The running turn stays unfolded.
 // No DOM here (the unit tests run it in Node): thread.js keeps per turn a list of items {kind}, where kind is
@@ -10,21 +10,16 @@ const WORK = new Set(["tool", "thinking"]);
 export const isWork = (item) => WORK.has(item?.kind);
 
 /**
- * What a finished turn folds away: indexes into `items`. Everything before its last reply (replies on the way too),
- * the tool calls after it, and its end line when it ended well (the fold row says the same). Null when there is no
- * work to fold, or the turn hasn't ended.
+ * What a finished turn folds away: indexes into `items`. Its work (tool calls, thinking) and its end line when it
+ * ended well (the fold row says the same); every reply stays, the ones on the way too. Null when there is no work to
+ * fold, or the turn hasn't ended.
  */
 export function foldTurn(items) {
   const endIndex = items.findIndex((i) => i.kind === "end");
   if (endIndex < 0) return null;
   const end = items[endIndex];
-  let replyIndex = -1;
-  items.forEach((item, i) => item.kind === "text" && (replyIndex = i));
   const hidden = new Set();
-  items.forEach((item, i) => {
-    if (i === replyIndex) return;
-    if (item.kind === "text" || isWork(item)) hidden.add(i);
-  });
+  items.forEach((item, i) => isWork(item) && hidden.add(i));
   if (!hidden.size) return null;
   if (end.entry?.status === "done") hidden.add(endIndex);
   return { hidden, label: foldLabel(end.entry) };

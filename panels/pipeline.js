@@ -17,7 +17,7 @@ const TOGGLE = {
   plan: { label: "📝 Plan", action: "toggle_plan",
     about: "Plan: its worker only plans and asks; the work starts when you Approve. Off: an ordinary task's thread." },
   whenAway: { label: "🌙 When away", action: "toggle_away",
-    about: "When away: what you send it (messages, answers, Approve) waits until you're Away. Off: messages that waited come back into the text box, unsent." },
+    about: "When away: what you send it (messages, answers, Approve) and Land wait until you're Away. Off: messages that waited come back into the text box, unsent." },
 };
 
 /** A toggle switch of the task (`which`: plan or whenAway), or null when it has none. */
