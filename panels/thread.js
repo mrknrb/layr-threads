@@ -1451,7 +1451,7 @@ async function refreshTask() {
     notify("When away is off: your unsent message is back in the text box", "info");
     void pipelineCall("thread_action", { thread: state.id, action: "unsent_taken" }).catch(() => {});
   }
-  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask());
+  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask(), { composerText, onSent: composerSent });
   renderWorking();
   clearTimeout(taskTimer);
   // While there is a pipeline, look again every 10 s (its events may not reach this panel).
@@ -1716,6 +1716,30 @@ $("stop").addEventListener("click", async () => {
     $("stop").disabled = false;
   }
 });
+
+/**
+ * What Send would send to the main agent now: the picked answers ("My answers: …"), then what is typed. The task
+ * strip's Approve and Send now take it along (empty in a subagent's view: its text is for that subagent).
+ */
+function composerText() {
+  if (state.sub) return "";
+  const typed = input.value;
+  const prefix = currentPrefix();
+  return prefix ? (typed.trim() ? `${prefix}
+
+${typed}` : prefix) : typed.trim() ? typed : "";
+}
+
+/** The task strip sent composerText(): the picks and the text box go empty; pictures stay for a message of their own. */
+function composerSent() {
+  input.value = "";
+  state.picks.picked = {};
+  renderLatest();
+  renderSlash();
+  autosize();
+  if (state.attachments.length) saveDraft();
+  else void drafts.clear(state.id);
+}
 
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
 async function send(mode, { away = false } = {}) {

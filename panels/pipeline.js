@@ -45,8 +45,12 @@ function togglePill(task, which, threadId, onDone) {
   return el;
 }
 
-/** Draw `task` into `el` (hidden when null). `onDone()` after a button ran (to refresh). */
-export function renderTaskStrip(el, task, threadId, onDone) {
+/**
+ * Draw `task` into `el` (hidden when null). `onDone()` after a button ran (to refresh). `composer`: {composerText,
+ * onSent} of the thread panel: Approve takes the picked answers and typed text along as its `text`; Send now sends
+ * them as a message right after what waited for Away. `onSent()` after either took them.
+ */
+export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
   if (!task) {
     el.hidden = true;
     el.replaceChildren();
@@ -89,7 +93,14 @@ export function renderTaskStrip(el, task, threadId, onDone) {
       if (btn.confirm && !(await confirmIn(actions, btn.confirm, { ok: btn.label, danger: btn.kind === "danger" }))) return;
       for (const x of actions.querySelectorAll("button")) x.disabled = true;
       try {
-        await pipelineCall("thread_action", { thread: threadId, action: btn.id });
+        // "start" is Land now too (a Land waiting for Away): only Send now takes the text box along.
+        const sendNow = btn.id === "start" && btn.label === "Send now";
+        const text = btn.id === "approve" || sendNow ? composer.composerText?.() ?? "" : "";
+        if (btn.id === "approve" && text) await pipelineCall("thread_action", { thread: threadId, action: btn.id, text });
+        else await pipelineCall("thread_action", { thread: threadId, action: btn.id });
+        // Send now: what waited goes first (When away is off now), then what was picked or typed after it.
+        if (sendNow && text && task.number != null) await pipelineCall("send", { number: task.number, text });
+        if (text) composer.onSent?.();
       } catch (error) {
         notify(`Pipeline: ${error.message}`, "error");
       } finally {
