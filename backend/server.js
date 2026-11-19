@@ -138,7 +138,7 @@ function linkPluginFolder(meta) {
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.3.16" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.5.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {

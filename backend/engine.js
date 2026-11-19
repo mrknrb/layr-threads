@@ -21,6 +21,7 @@ import { baseRef as findBaseRef } from "./changes.js";
 import { createWorktree, currentBranch, isGitRepo, restoreWorktree } from "./git.js";
 import { findForkPoint, readSessionFile } from "./goBack.js";
 import { findSubagent, relayPrompt, subagentEntries, userText } from "./subagents.js";
+import { DEFAULT_PROTECTED, guardHooks, layrPids } from "./guard.js";
 import { threadSettings } from "./threadSettings.js";
 import {
   AsyncQueue,
@@ -89,7 +90,10 @@ const LAYR_INSTRUCTIONS = `
 # layr
 You are running inside layr, the user's workbench app, as one of its Claude Code threads. The MCP server named
 "layr" (when connected) gives you the tools of every plugin installed in layr, named mcp__layr__<plugin>__<tool>,
-and layr's own tools (mcp__layr__layr__*): use them when the user asks for something a plugin does.`;
+and layr's own tools (mcp__layr__layr__*): use them when the user asks for something a plugin does.
+Never end processes by name or by tree (taskkill /IM, Stop-Process -Name, pkill, killall, taskkill /T): the user's
+own programs run on this PC, layr itself among them (layr.exe, the same name as a test core). Stop only processes
+you started, by the id you kept when starting them. layr refuses kills by name.`;
 
 export class Engine {
   /**
@@ -1211,6 +1215,11 @@ export class Engine {
           : {}),
       permissionMode: meta.permissionMode || "default",
       allowDangerouslySkipPermissions: true,
+      hooks: guardHooks({
+        settings: () => this.killGuardSettings(),
+        protectedPids: layrPids(),
+        onBlock: (command) => log(`kill guard: refused in ${meta.id}: ${truncate(command.replace(/\s+/g, " "), 300)}`),
+      }),
       settingSources: ["user", "project", "local"],
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       ...(meta.allowRules?.length ? { allowedTools: [...meta.allowRules] } : {}),
@@ -1234,6 +1243,20 @@ export class Engine {
     this.store.updateThread(meta.id, { sessionId: meta.sessionId });
     void this.pump(meta, live, resume);
     return live;
+  }
+
+  /** The kill guard's settings (layr.json killByName, protectedPrograms), read at most every 5 s. */
+  async killGuardSettings() {
+    const now = Date.now();
+    if (this.killGuardCache && now - this.killGuardCache.at < 5_000) return this.killGuardCache.value;
+    const get = (id) => Promise.race([
+      this.hub?.settingsGet?.(id) ?? undefined,
+      new Promise((resolve) => setTimeout(() => resolve(undefined), 2_000)),
+    ]).catch(() => undefined);
+    const [mode, programs] = await Promise.all([get("killByName"), get("protectedPrograms")]);
+    const value = { mode: mode ?? "all", programs: typeof programs === "string" ? programs : DEFAULT_PROTECTED };
+    this.killGuardCache = { at: now, value };
+    return value;
   }
 
   async pump(meta, live, resumed) {

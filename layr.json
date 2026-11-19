@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions, with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -43,7 +43,17 @@
       "description": "Not for archived threads, nor for background ones (permission mode dontAsk).", "default": true },
     { "id": "repairConfig", "type": "boolean", "title": "Repair an empty ~/.claude.json",
       "description": "Claude Code's settings file is sometimes left empty while many Claude Codes run, and none can start then. Threads always wait and try again; with this on, layr also puts back Claude Code's newest backup (at most a day old), only while the file has been empty for 30 s.",
-      "default": false }
+      "default": false },
+    { "id": "killByName", "type": "enum", "title": "Block threads from ending programs by name", "default": "all",
+      "options": [
+        { "value": "all", "title": "All programs" },
+        { "value": "listed", "title": "Only the programs listed below" },
+        { "value": "off", "title": "Off" }
+      ],
+      "description": "Refuses a thread's commands like taskkill /IM layr.exe, Stop-Process -Name or pkill: the layr app is layr.exe, the same name as a test core, so such a kill closed layr with every thread in it. Ending layr itself by its process id is refused whatever this says." },
+    { "id": "protectedPrograms", "type": "string", "title": "Programs to protect",
+      "description": "With \"Only the programs listed below\": comma-separated program names (* works as a wildcard).",
+      "default": "layr.exe, node.exe, claude.exe", "placeholder": "layr.exe, node.exe, claude.exe" }
   ],
   "backend": {
     "kind": "process",
