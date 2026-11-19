@@ -1,6 +1,6 @@
 {
   "name": "layr-plugin-claude",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "private": true,
   "type": "module",
   "description": "layr's Claude Code engine: threads, worktrees, approvals, through the Agent SDK.",

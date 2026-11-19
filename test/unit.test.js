@@ -327,3 +327,58 @@ test("account: the watch sees a switch by itself", async () => {
   assert.equal(account.limits.rejectedUntil, null);
   assert.equal(changes[0], "b@example.com");
 });
+
+test("restoreWorktree and restoreWorkspace: a removed worktree comes back in its folder, from the newest base", async () => {
+  const { restoreWorktree } = await import("../backend/git.js");
+  const { Engine } = await import("../backend/engine.js");
+  const { Store } = await import("../backend/store.js");
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "layr-claude-restore-"));
+  const repo = path.join(tmp, "repo");
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  writeFileSync(path.join(repo, "a.txt"), "one\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "init");
+  const folder = path.join(tmp, "trees", "repo-x");
+  git(repo, "worktree", "add", "-q", "-b", "layr/x", folder, "main");
+  writeFileSync(path.join(folder, "b.txt"), "b\n");
+  git(folder, "add", ".");
+  git(folder, "commit", "-q", "-m", "work");
+  git(repo, "merge", "-q", "--ff-only", "layr/x");
+  writeFileSync(path.join(repo, "c.txt"), "c\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "later on main");
+  const newest = git(repo, "rev-parse", "main").trim();
+  // Merged, removed, branch kept: it moves up to the newest main.
+  git(repo, "worktree", "remove", "--force", folder);
+  const kept = await restoreWorktree({ projectPath: repo, folder, branch: "layr/x", baseRef: "main" });
+  assert.deepEqual([kept.branch, kept.base, kept.from], ["layr/x", newest, "main"]);
+  assert.equal(git(folder, "rev-parse", "--abbrev-ref", "HEAD").trim(), "layr/x");
+  // Removed with its branch: made again from main.
+  git(repo, "worktree", "remove", "--force", folder);
+  git(repo, "branch", "-D", "layr/x");
+  const made = await restoreWorktree({ projectPath: repo, folder, branch: "layr/x", baseRef: "main" });
+  assert.equal(made.base, newest);
+  // A branch with work main lacks keeps it.
+  writeFileSync(path.join(folder, "d.txt"), "d\n");
+  git(folder, "add", ".");
+  git(folder, "commit", "-q", "-m", "unmerged");
+  const own = git(folder, "rev-parse", "HEAD").trim();
+  git(repo, "worktree", "remove", "--force", folder);
+  assert.equal((await restoreWorktree({ projectPath: repo, folder, branch: "layr/x", baseRef: "main" })).base, own);
+
+  // The engine: a worktree thread whose folder is gone gets it back before its turn, and says so.
+  git(repo, "worktree", "remove", "--force", folder);
+  const store = new Store(mkdtempSync(path.join(os.tmpdir(), "layr-claude-restore-store-")));
+  const project = store.addProject({ path: repo });
+  const engine = new Engine({ store, hub: { available: false, emit() {}, notify() {} }, account: { listModels: async () => [] } });
+  const meta = store.createThread({
+    id: "t_r", projectId: project.id, title: "T", kind: "thread", cwd: folder,
+    workspace: { kind: "worktree", path: folder, branch: "layr/x", baseRef: "main" }, permissionMode: "default",
+    sessionId: "s", sessionStarted: true, queue: [], queuePaused: false, pendingApprovals: [], todos: [], status: "done", turns: 1,
+  });
+  const note = await engine.restoreWorkspace(meta);
+  assert.match(note, /made again in the same folder on layr\/x, from the newest main/);
+  assert.equal(git(folder, "rev-parse", "HEAD").trim(), own);
+  assert.ok(store.thread("t_r").workspace.restoredAt);
+  assert.equal(await engine.restoreWorkspace(store.thread("t_r")), null, "nothing missing: nothing to do");
+});

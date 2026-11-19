@@ -97,6 +97,30 @@ export async function createWorktree({ projectPath, name, branch, worktreesRoot,
   return { path: folder, branch: candidate, base };
 }
 
+/**
+ * Make a removed worktree again in the same `folder` (a Claude session is kept by its folder, so the thread resumes).
+ * Its `branch`, when still there and already in the base, moves up to the newest base first (it loses nothing); a
+ * branch with work the base lacks keeps it; a branch that's gone is made again from the newest base (`baseRef`, else
+ * the project's HEAD). Gives { path, branch, base (the commit it starts on), from (what was taken as the base) }.
+ */
+export async function restoreWorktree({ projectPath, folder, branch, baseRef }) {
+  if (!(await isGitRepo(projectPath))) throw new Error(`${projectPath} is not a git repository: the worktree can't be made again`);
+  await git(projectPath, ["worktree", "prune"]).catch(() => {});
+  const named = baseRef ? (await git(projectPath, ["rev-parse", "--verify", `${baseRef}^{commit}`]).catch(() => "")).trim() : "";
+  const base = named || (await git(projectPath, ["rev-parse", "--verify", "HEAD"])).trim();
+  const name = branch || `layr/${slugify(path.basename(folder), 48) || "thread"}`;
+  ensureDir(path.dirname(folder));
+  if (await branchExists(projectPath, name)) {
+    const merged = await git(projectPath, ["merge-base", "--is-ancestor", `refs/heads/${name}`, base]).then(() => true, () => false);
+    if (merged) await git(projectPath, ["branch", "-f", name, base]);
+    await git(projectPath, ["worktree", "add", folder, name], { timeoutMs: 600_000 });
+  } else {
+    await git(projectPath, ["worktree", "add", "-b", name, folder, base], { timeoutMs: 600_000 });
+  }
+  const head = (await git(folder, ["rev-parse", "HEAD"])).trim();
+  return { path: folder, branch: name, base: head, from: named ? baseRef : "HEAD" };
+}
+
 /** A short summary of a worktree's state: changed files and commits ahead of where it started. */
 export async function worktreeStatus(dir, base) {
   const status = await git(dir, ["status", "--porcelain"]).catch(() => "");

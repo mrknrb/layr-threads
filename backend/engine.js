@@ -16,7 +16,8 @@ import { claudeEnv } from "./claudeEnv.js";
 import { CONFIG_RETRY_MS, configEmpty, isConfigBroken, repairEmptyConfig, restoreHint } from "./claudeConfig.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
-import { createWorktree, currentBranch, isGitRepo } from "./git.js";
+import { baseRef as findBaseRef } from "./changes.js";
+import { createWorktree, currentBranch, isGitRepo, restoreWorktree } from "./git.js";
 import { findSubagent, relayPrompt, subagentEntries, userText } from "./subagents.js";
 import { threadSettings } from "./threadSettings.js";
 import {
@@ -232,7 +233,11 @@ export class Engine {
         baseRef: input.baseRef || undefined,
         worktreesRoot: process.env.LAYR_CLAUDE_WORKTREES || undefined,
       });
-      workspace = { kind: "worktree", path: tree.path, branch: tree.branch, base: tree.base, created: true };
+      // 0.3.10: `baseRef` kept, so a worktree removed later is made again from the newest of the same base.
+      workspace = {
+        kind: "worktree", path: tree.path, branch: tree.branch, base: tree.base, created: true,
+        ...(input.baseRef ? { baseRef: String(input.baseRef) } : {}),
+      };
     } else if (typeof ws === "object" && (ws.worktreePath || ws.path)) {
       const dir = path.resolve(ws.worktreePath || ws.path);
       if (!isDirectory(dir)) throw new Error(`No such folder: ${dir}`);
@@ -628,6 +633,7 @@ export class Engine {
    */
   async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false, relay = null }) {
     this.cancelConfigRetry(meta.id);
+    const restored = await this.restoreWorkspace(meta);
     // `relay`: the user's message to a subagent, which the main agent passes on (sendToSubagent).
     const message = relay
       ? this.relayMessage(meta, relay, text, savedImages ?? this.saveImages(meta, images))
@@ -648,6 +654,7 @@ export class Engine {
     live.turnInput = { text: message.text, images: message.images, fork };
     this.beginTurn(meta, live);
     this.tellLostBackground(meta, message.sdk);
+    if (restored) prependNote(message.sdk, restored);
     live.input.push(message.sdk);
     this.touch(meta, { preview: preview(text) });
   }
@@ -813,6 +820,30 @@ export class Engine {
   }
 
   /** The next message tells Claude which of its background tasks were stopped, so it needn't guess. */
+  /**
+   * A worktree thread whose folder is gone (the pipeline removes worktrees of merged tasks): its worktree is made
+   * again in the same folder before the turn, from the newest base, so the session (kept by folder) resumes. Says so
+   * in the transcript; gives the note for Claude, or null when nothing was missing.
+   */
+  async restoreWorkspace(meta) {
+    const ws = meta.workspace;
+    if (ws?.kind !== "worktree" || !meta.cwd || existsSync(meta.cwd)) return null;
+    const live = this.lives.get(meta.id);
+    if (live && this.canClose(live)) this.closeLive(meta.id, "its worktree was gone");
+    const project = this.resolveProject(meta.projectId);
+    const wanted = ws.baseRef || (await findBaseRef(project.path).catch(() => null));
+    const tree = await restoreWorktree({ projectPath: project.path, folder: meta.cwd, branch: ws.branch, baseRef: wanted });
+    this.store.updateThread(meta.id, { workspace: { ...ws, branch: tree.branch, base: tree.base, restoredAt: nowIso() } });
+    const text = `Its worktree was gone, so it was made again: ${tree.branch} from ${tree.from} (${tree.base.slice(0, 10)}).`;
+    this.store.append(meta.id, { type: "system", subtype: "worktree_restored", text });
+    this.emitEntry(meta.id, this.lastEntry);
+    return (
+      `[layr: your worktree was removed after its work was merged, and was made again in the same folder on ` +
+      `${tree.branch}, from the newest ${tree.from} (${tree.base.slice(0, 10)}). Files that were never committed ` +
+      "(build output, dependencies, local files) are gone: build again before you rely on them.]\n\n"
+    );
+  }
+
   tellLostBackground(meta, sdk) {
     const lost = meta.lostBackground;
     if (!lost?.length) return;
@@ -822,9 +853,7 @@ export class Engine {
       "[layr: these background tasks of yours were stopped before they finished, when the Claude Code process " +
       "closed; they will not report back. Check what they left (commits, files) before relying on their work.\n" +
       `${lines.join("\n")}]\n\n`;
-    const content = sdk.message.content;
-    if (typeof content === "string") sdk.message.content = note + content;
-    else sdk.message.content = [{ type: "text", text: note.trim() }, ...content];
+    prependNote(sdk, note);
   }
 
   fail(meta, error) {
@@ -1773,4 +1802,11 @@ function round(n, digits) {
   if (typeof n !== "number") return n;
   const f = 10 ** digits;
   return Math.round(n * f) / f;
+}
+
+/** Put a note for Claude in front of a user message. */
+function prependNote(sdk, note) {
+  const content = sdk.message.content;
+  if (typeof content === "string") sdk.message.content = note + content;
+  else sdk.message.content = [{ type: "text", text: note.trim() }, ...content];
 }
