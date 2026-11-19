@@ -126,11 +126,18 @@ function linkPluginFolder(meta) {
     })
     .catch((error) => {
       log(`linking ${meta.cwd} failed:`, errorMessage(error));
+      // 0.3.16: said in the thread too: layr keeps running the last layr.json it could read, so the turn's manifest
+      // changes (new permissions, panels) silently don't apply until it is fixed.
+      const text = `layr couldn't load this plugin's layr.json, so it still runs the last one it could read: ${truncate(
+        errorMessage(error), 400)}`;
+      const entry = store.append(meta.id, { type: "system", subtype: "link-failed", text });
+      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.notify(`${meta.extra?.pluginId ?? "A plugin"}: layr.json can't be loaded`, "error");
       return null;
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.3.14" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.3.16" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
