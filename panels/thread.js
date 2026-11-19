@@ -1120,6 +1120,7 @@ function setThread(t) {
   renderSubagents();
   renderSubbar();
   renderTodos(t.todos ?? []);
+  renderGone(t);
   renderQueue(t);
   renderPickers();
   renderWorking();
@@ -1216,6 +1217,39 @@ function renderTodos(todos) {
   det.firstChild.style.cssText = "list-style:none;cursor:pointer;padding:6px 10px;display:flex;gap:8px;align-items:center;color:var(--fg-dim)";
   det.querySelector(".todo-list").style.cssText = "padding:0 12px 8px;max-height:180px;overflow:auto";
   el.replaceChildren(det);
+  el.hidden = false;
+}
+
+/** 0.3.12: the thread's folder is gone: a worktree comes back with the next message or Restore worktree now. */
+function renderGone(t) {
+  const el = $("gone");
+  if (!t.folderGone) {
+    el.hidden = true;
+    return;
+  }
+  if (el.dataset.path === t.cwd && !el.hidden) return;
+  el.dataset.path = t.cwd ?? "";
+  const worktree = t.workspace?.kind === "worktree";
+  const branch = t.workspace?.branch ? ` (branch ${t.workspace.branch})` : "";
+  const text = worktree
+    ? `This thread's worktree is gone${branch}: ${t.cwd}. It is made again from the newest base when you send a ` +
+      "message, or now."
+    : `This thread's folder is gone: ${t.cwd}. Claude can't work here any more.`;
+  const tip = "Make the worktree again in the same folder now (files that were never committed don't come back)";
+  const restore = worktree
+    ? h("button", { class: "btn small primary", title: tip }, icon("branch", 13), "Restore worktree")
+    : null;
+  restore?.addEventListener("click", async () => {
+    restore.disabled = true;
+    try {
+      const r = await call("thread_restore_workspace", { thread: state.id });
+      if (r.thread) setThread(r.thread);
+    } catch (error) {
+      notify(error.message, "error");
+      restore.disabled = false;
+    }
+  });
+  el.replaceChildren(h("span", { class: "t" }, text), restore);
   el.hidden = false;
 }
 

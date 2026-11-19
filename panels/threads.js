@@ -347,6 +347,7 @@ function threadRow(t) {
     h("div", { class: "sub" },
       waiting ? h("span", { class: "badge wait" }, icon("shield", 11), "Needs you") : null,
       ws.kind === "worktree" ? h("span", { class: "badge mono", title: ws.path }, icon("branch", 11), ws.branch ?? "worktree") : null,
+      t.folderGone ? h("span", { class: "badge warn", title: `Its folder is gone: ${t.cwd}` }, "gone") : null,
       t.queue?.length ? h("span", { class: "badge" }, `${t.queue.length} queued`) : null,
       t.background?.length ? h("span", { class: "badge", title: t.background.map((b) => b.description).join("\n") },
         `${t.background.length} in background`) : null,

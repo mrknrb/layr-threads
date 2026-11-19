@@ -43,7 +43,8 @@
   color: var(--fg-dim); }
 .row .sub .prev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 .row .sub .badge { height: 18px; font-size: 11px; flex: none; max-width: 45%; }
-.row .sub .badge.wait { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.row .sub .badge.wait, .row .sub .badge.warn { background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--warn); }
 .row .row-acts { position: absolute; right: 6px; top: 5px; display: none; gap: 2px; background: var(--bg-2);
   border-radius: 6px; }
 .row:hover .row-acts { display: flex; }

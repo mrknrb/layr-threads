@@ -555,6 +555,9 @@ export class Engine {
       live: Boolean(live),
       cwd: meta.cwd,
       workspace: meta.workspace,
+      // 0.3.12: its folder isn't there (a worktree removed: made again before the next turn, or by
+      // thread_restore_workspace now).
+      folderGone: this.folderGone(meta),
       model: meta.model,
       effort: meta.effort,
       thinking: meta.thinking,
@@ -633,7 +636,10 @@ export class Engine {
    */
   async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false, relay = null }) {
     this.cancelConfigRetry(meta.id);
-    const restored = await this.restoreWorkspace(meta);
+    // 0.3.12: a note from a worktree made again with Restore worktree, before this turn, is said now.
+    const restored = (await this.restoreWorkspace(meta)) ?? meta.restoreNote ?? null;
+    if (meta.restoreNote) this.store.updateThread(meta.id, { restoreNote: null });
+    if (this.folderGone(meta)) throw new Error(goneText(meta));
     // `relay`: the user's message to a subagent, which the main agent passes on (sendToSubagent).
     const message = relay
       ? this.relayMessage(meta, relay, text, savedImages ?? this.saveImages(meta, images))
@@ -842,6 +848,25 @@ export class Engine {
       `${tree.branch}, from the newest ${tree.from} (${tree.base.slice(0, 10)}). Files that were never committed ` +
       "(build output, dependencies, local files) are gone: build again before you rely on them.]\n\n"
     );
+  }
+
+  /** Whether the thread's folder is gone (a worktree the pipeline or the user removed, a folder deleted). */
+  folderGone(meta) {
+    return Boolean(meta.cwd) && !isDirectory(meta.cwd);
+  }
+
+  /**
+   * 0.3.12: Restore worktree: a worktree thread's removed folder made again now, without a turn (to look at it, or
+   * before writing); Claude is told with the next message. Gives {restored, thread}; restored false when it is there.
+   */
+  async restoreNow(id) {
+    const meta = this.requireThread(id);
+    if (!this.folderGone(meta)) return { restored: false, thread: this.summary(meta) };
+    if (meta.workspace?.kind !== "worktree") throw new Error(goneText(meta));
+    const note = await this.restoreWorkspace(meta);
+    if (note) this.store.updateThread(id, { restoreNote: note });
+    this.emitThread(meta);
+    return { restored: Boolean(note), thread: this.summary(meta) };
   }
 
   tellLostBackground(meta, sdk) {
@@ -1802,6 +1827,12 @@ function round(n, digits) {
   if (typeof n !== "number") return n;
   const f = 10 ** digits;
   return Math.round(n * f) / f;
+}
+
+/** What a thread whose folder is gone and can't come back says. */
+function goneText(meta) {
+  return `The thread's folder is gone: ${meta.cwd}. Claude can't work there any more: start a new thread where the ` +
+    "work is now.";
 }
 
 /** Put a note for Claude in front of a user message. */

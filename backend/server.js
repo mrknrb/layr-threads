@@ -316,6 +316,15 @@ tool(
 );
 
 tool(
+  "thread_restore_workspace",
+  "0.3.12: make a worktree thread's removed folder (folderGone in its summary) again now, in the same folder, as its " +
+    "next turn would (from the newest base; its branch when that has work the base lacks); Claude is told with the " +
+    "next message. Refused for a folder that isn't a worktree. Gives {restored, thread}.",
+  { thread: threadId },
+  (a) => engine.restoreNow(a.thread),
+);
+
+tool(
   "thread_list",
   "Threads, latest activity first, with status: running, waiting (for an approval or answer), done, failed, interrupted.",
   {
