@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>claude plugin — dev shell</title>
+  <style>
+    html, body { margin: 0; height: 100%; font: 13px system-ui, sans-serif; background: #0f1013; color: #ccc; }
+    #wrap { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
+    #wrap.light { background: #ddd; }
+    .pane { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid #2a2a2a; }
+    .tabs { display: flex; gap: 2px; padding: 4px 4px 0; background: #121318; height: 30px; box-sizing: border-box; overflow-x: auto; }
+    .tab { padding: 4px 10px; border-radius: 6px 6px 0 0; background: #1b1c21; cursor: pointer; white-space: nowrap; max-width: 220px;
+      overflow: hidden; text-overflow: ellipsis; }
+    .tab.on { background: #26282f; color: #fff; }
+    .tab .x { margin-left: 6px; opacity: 0.5; }
+    iframe { flex: 1; border: 0; width: 100%; display: none; }
+    iframe.on { display: block; }
+    #toast { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 6px 12px;
+      border-radius: 6px; display: none; }
+    .spacer { flex: 1; }
+    button { font: inherit; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="pane" id="left">
+      <div class="tabs"><span class="tab on" id="lt">Claude threads</span><span class="spacer"></span>
+        <button id="theme">theme</button><button id="np">make plugin</button></div>
+    </div>
+    <div class="pane" id="right"><div class="tabs" id="rtabs"></div></div>
+  </div>
+  <div id="toast"></div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    let theme = params.get("theme") || "dark";
+    const left = document.getElementById("left");
+    const right = document.getElementById("right");
+    const rtabs = document.getElementById("rtabs");
+    const frames = new Map();
+    let n = 0;
+    function src(panel, prm, instance) {
+      return `/panels/${panel}.html?panel=${panel}&instance=${instance}&theme=${theme}&params=${encodeURIComponent(JSON.stringify(prm || {}))}`;
+    }
+    const lf = document.createElement("iframe");
+    lf.className = "on";
+    lf.src = src("threads", JSON.parse(params.get("threadsParams") || "{}"), "p_threads");
+    left.append(lf);
+    function open(panel, prm) {
+      const key = panel === "thread" ? `thread:${prm.thread}` : panel;
+      if (frames.has(key)) return focus(key);
+      const instance = `p_${++n}`;
+      const f = document.createElement("iframe");
+      f.src = src(panel, prm, instance);
+      f.dataset.instance = instance;
+      const tab = document.createElement("span");
+      tab.className = "tab";
+      tab.textContent = panel;
+      const x = document.createElement("span");
+      x.className = "x";
+      x.textContent = "×";
+      x.onclick = (e) => { e.stopPropagation(); f.remove(); tab.remove(); frames.delete(key); const k = [...frames.keys()].pop(); if (k) focus(k); };
+      tab.append(x);
+      tab.onclick = () => focus(key);
+      rtabs.append(tab);
+      right.append(f);
+      frames.set(key, { f, tab, instance });
+      focus(key);
+    }
+    function focus(key) {
+      for (const [k, v] of frames) { v.f.classList.toggle("on", k === key); v.tab.classList.toggle("on", k === key); }
+    }
+    window.addEventListener("message", (ev) => {
+      const m = ev.data || {};
+      if (m.type === "open") open(m.panel, m.params);
+      if (m.type === "title") for (const v of frames.values()) if (v.instance === m.instance) { v.tab.firstChild.textContent = m.title; }
+      if (m.type === "notify") { const t = document.getElementById("toast"); t.textContent = m.text; t.style.display = "block"; t.style.background = m.kind === "error" ? "#a33" : "#333"; setTimeout(() => (t.style.display = "none"), 3500); }
+    });
+    document.getElementById("theme").onclick = () => { const p = new URLSearchParams(location.search); p.set("theme", theme === "dark" ? "light" : "dark"); location.search = p; };
+    document.getElementById("np").onclick = () => open("threads", { new: true, target: "plugin", plugin: "new" });
+    if (params.get("open")) open("thread", { thread: params.get("open") });
+    if (params.get("openPanel")) open(params.get("openPanel"), {});
+    window.__open = open;
+  </script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+/* The Claude plugin's panels. layr.js sets the theme variables on <html>; these are only fallbacks. */
+:where(:root) {
+  --bg: #17181b;
+  --bg-2: #1f2125;
+  --bg-3: #2a2d33;
+  --fg: #e6e7ea;
+  --fg-dim: #9a9ea8;
+  --border: #33363d;
+  --accent: #d97757;
+  --accent-fg: #ffffff;
+  --danger: #e5534b;
+  --radius: 8px;
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --ok: var(--success, #3fb950);
+  --warn: var(--warning, #d4a72c);
+  --add-bg: rgba(63, 185, 80, 0.14);
+  --add-fg: #7ee08a;
+  --del-bg: rgba(229, 83, 75, 0.14);
+  --del-fg: #ff9b94;
+  color-scheme: dark;
+}
+:where(:root[data-theme="light"]) {
+  --bg: #ffffff;
+  --bg-2: #f6f7f9;
+  --bg-3: #eceef2;
+  --fg: #1d2026;
+  --fg-dim: #646a75;
+  --border: #dde0e6;
+  --ok: var(--success, #1a7f37);
+  --warn: var(--warning, #9a6700);
+  --add-bg: rgba(26, 127, 55, 0.1);
+  --add-fg: #116329;
+  --del-bg: rgba(207, 34, 46, 0.1);
+  --del-fg: #a40e26;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13.5px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+.icon { flex: none; vertical-align: -3px; }
+a { color: var(--accent); }
+::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg-dim) 30%, transparent); border-radius: 10px;
+  border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg-dim) 50%, transparent); }
+
+/* Controls (own look on top of layr.css's classes) */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--bg-2);
+  cursor: pointer; white-space: nowrap; transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover { background: var(--bg-3); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--danger); }
+.btn.danger.solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.ghost { background: transparent; border-color: transparent; }
+.btn.ghost:hover { background: var(--bg-3); }
+.btn.small { height: 26px; padding: 0 9px; font-size: 12.5px; }
+.btn.icon-only { width: 30px; padding: 0; justify-content: center; }
+.btn.small.icon-only { width: 26px; }
+
+.input, .select, .textarea {
+  background: var(--bg); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px);
+  padding: 5px 9px; outline: none; min-width: 0;
+}
+.input, .select { height: 30px; }
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent); }
+.select { padding-right: 6px; cursor: pointer; }
+.select.compact {
+  height: 26px; font-size: 12.5px; border-color: transparent; background: transparent; color: var(--fg-dim);
+  padding: 0 4px; max-width: 170px;
+}
+.select.compact:hover { background: var(--bg-3); color: var(--fg); }
+.textarea { resize: vertical; width: 100%; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-dim); }
+.field > span { font-weight: 600; letter-spacing: 0.01em; }
+
+.muted { color: var(--fg-dim); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; height: 20px; border-radius: 10px;
+  background: var(--bg-3); color: var(--fg-dim); font-size: 11.5px; white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.badge.mono { font-family: var(--font-mono); font-size: 11px; }
+.spinner {
+  width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent); animation: spin 0.8s linear infinite; flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--fg-dim); }
+.dot.running, .dot.starting { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.dot.waiting { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+.dot.done { background: var(--ok); }
+.dot.failed { background: var(--danger); }
+.dot.interrupted, .dot.idle { background: var(--fg-dim); }
+
+/* A right-click menu of our own, where the shell has none (ui.js) */
+.own-menu { position: fixed; z-index: 100; min-width: 180px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); display: flex; flex-direction: column; }
+.own-menu button { border: 0; background: none; text-align: left; padding: 5px 10px; border-radius: 5px;
+  cursor: pointer; }
+.own-menu button:hover:not(:disabled) { background: var(--bg-3); }
+.own-menu button.danger { color: var(--danger); }
+.own-menu .sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+.empty { padding: 40px 20px; text-align: center; color: var(--fg-dim); }
+.error-box {
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--fg); border-radius: var(--radius); padding: 8px 12px; white-space: pre-wrap; word-break: break-word;
+}
+.error-box .actions { margin-top: 8px; white-space: normal; }
+
+/* Markdown */
+.md { word-wrap: break-word; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 10px; }
+.md h1, .md h2, .md h3, .md h4 { margin: 16px 0 8px; line-height: 1.3; }
+.md h1 { font-size: 1.35em; } .md h2 { font-size: 1.2em; } .md h3 { font-size: 1.07em; } .md h4 { font-size: 1em; }
+.md ul, .md ol { padding-left: 22px; }
+.md li { margin: 2px 0; }
+.md li > p { margin: 0; }
+.md code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-3); padding: 1px 5px;
+  border-radius: 4px; }
+.md pre { position: relative; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
+.md blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-dim); }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 9px; }
+.md th { background: var(--bg-2); }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.md img { max-width: 100%; }
+.copy-btn {
+  position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 0.12s; height: 24px; padding: 0 7px;
+  font-size: 11.5px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg-3); cursor: pointer;
+  color: var(--fg-dim);
+}
+.md pre:hover .copy-btn { opacity: 1; }
+
+/* Diff */
+.diff { font-family: var(--font-mono); font-size: 12px; line-height: 1.45; background: var(--bg); border-radius: 6px;
+  border: 1px solid var(--border); overflow: auto; max-height: 420px; }
+.diff .ln { display: flex; white-space: pre; min-width: max-content; }
+.diff .ln > .g { width: 22px; text-align: center; flex: none; color: var(--fg-dim); user-select: none; }
+.diff .ln > .t { padding-right: 12px; }
+.diff .ln.add { background: var(--add-bg); } .diff .ln.add > .g, .diff .ln.add > .t { color: var(--add-fg); }
+.diff .ln.del { background: var(--del-bg); } .diff .ln.del > .g, .diff .ln.del > .t { color: var(--del-fg); }
+.diff .ln.gap { color: var(--fg-dim); background: var(--bg-2); }
+.diff-file { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); margin-bottom: 4px;
+  word-break: break-all; }
+pre.block { margin: 0; font-family: var(--font-mono); font-size: 12px; background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; overflow: auto; max-height: 360px; white-space: pre-wrap;
+  word-break: break-word; }
+pre.block.error { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--del-fg); }
