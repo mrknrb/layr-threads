@@ -7,6 +7,7 @@ import { answerPrefix, hasPicks, pickIn, questionsOf, toggleAgree } from "./boxe
 import {
   STATUS_LABEL,
   call,
+  defaultModelName,
   effortOptions,
   fillSelect,
   h,
@@ -70,7 +71,9 @@ const state = {
   titleSet: false,
   /** The latest top-level reply: {entry, holder, sections}; its questions can be answered. */
   latest: null,
-  /** Answers picked in the latest reply: {replyId, picked} (boxes.js picks). */
+  /** Answers picked in the latest reply: {replyId, picked, sent?} (boxes.js picks). `sent`: Approve or Send took
+   * them along and they still wait (for Away, or the pipeline): they show, locked, until your message is in the
+   * thread. */
   picks: { replyId: null, picked: {} },
   /** Half-filled answers to pending questions: {[requestId]: {[question index]: {picked, own}}}. */
   answers: {},
@@ -306,6 +309,7 @@ function addEntry(e, { into = main } = {}) {
   noteAgent(e);
   const el = drawEntry(e, into);
   if (into === main) {
+    picksArrived(e);
     state.entries.push(e);
     if (state.sub) subFollow(e);
   }
@@ -823,6 +827,7 @@ function drawReply(l, pick) {
 }
 
 function picker() {
+  if (state.picks.sent) return { picked: state.picks.picked, locked: true };
   return {
     picked: state.picks.picked,
     onPick: (q, letter) => {
@@ -844,6 +849,11 @@ function afterPick() {
 
 /** What the next message starts with: "I agree with everything recommended" or "My answers: …". */
 function currentPrefix() {
+  return state.picks.sent ? "" : picksText();
+}
+
+/** The picks as words, sent or not. */
+function picksText() {
   const l = state.latest;
   if (!l || state.picks.replyId !== l.entry.id) return "";
   return answerPrefix(questionsOf(l.sections), state.picks.picked);
@@ -851,6 +861,11 @@ function currentPrefix() {
 
 function renderPrefix() {
   const el = $("prefix");
+  if (state.picks.sent && !state.sub && picksText()) {
+    el.hidden = false;
+    return el.replaceChildren(h("span", { class: "label" }, "Sent, waiting to reach the thread:"),
+      h("span", { class: "text sent" }, picksText()));
+  }
   const text = state.sub ? "" : currentPrefix();
   el.hidden = !text;
   if (!text) return el.replaceChildren();
@@ -1352,11 +1367,15 @@ function renderPickers() {
   if (!t) return;
   const models = state.models.length ? state.models : [{ id: "opus", label: "Opus", efforts: [] }, { id: "sonnet", label: "Sonnet", efforts: [] }, { id: "haiku", label: "Haiku", efforts: [] }];
   const modelSel = $("model");
-  const opts = modelOptions(models);
+  // What "Default" stands for: the model Claude Code said it runs (while none is picked), Claude Code's settings.
+  const defaults = t.defaults ?? {};
+  const defaultName = defaultModelName(state.models, { resolved: t.model ? null : t.resolvedModel,
+    setting: defaults.model });
+  const opts = modelOptions(models, { defaultName });
   if (t.model && !opts.some((o) => o.value === t.model)) opts.push({ value: t.model, label: t.model });
   if (document.activeElement !== modelSel) fillSelect(modelSel, opts, t.model ?? "");
   const effortSel = $("effort");
-  const eopts = effortOptions(models, t.model ?? "default");
+  const eopts = effortOptions(models, t.model ?? "default", { defaultEffort: defaults.effort });
   if (t.effort && !eopts.some((o) => o.value === t.effort)) eopts.push({ value: t.effort, label: `Effort: ${t.effort}` });
   if (document.activeElement !== effortSel) fillSelect(effortSel, eopts, t.effort ?? "");
   const modeSel = $("mode");
@@ -1730,15 +1749,31 @@ function composerText() {
 ${typed}` : prefix) : typed.trim() ? typed : "";
 }
 
-/** The task strip sent composerText(): the picks and the text box go empty; pictures stay for a message of their own. */
+/**
+ * The task strip sent composerText(): the text box goes empty; pictures stay for a message of their own. The picks
+ * stay in the reply, locked, until the message is in the thread (picksArrived).
+ */
 function composerSent() {
   input.value = "";
-  state.picks.picked = {};
+  holdPicks();
   renderLatest();
   renderSlash();
   autosize();
   if (state.attachments.length) saveDraft();
   else void drafts.clear(state.id);
+}
+
+/** Keep the picks showing, locked, until your message reaches the thread; none: nothing to keep. */
+function holdPicks() {
+  if (hasPicks(state.picks.picked)) state.picks.sent = true;
+  else state.picks.picked = {};
+}
+
+/** Your message is in the thread: the picks it took along go. */
+function picksArrived(e) {
+  if (!state.picks.sent || e.type !== "user" || e.parent || e.relay) return;
+  state.picks = { replyId: state.picks.replyId, picked: {} };
+  renderLatest();
 }
 
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
@@ -1753,6 +1788,7 @@ async function send(mode, { away = false } = {}) {
   const images = state.attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const sendBtn = $(away ? "away" : "send");
   sendBtn.disabled = true;
+  let heldBack = false;
   try {
     let r = null;
     if (toSub) r = await call("thread_send", { thread: state.id, text, images, agent: toSub });
@@ -1766,13 +1802,16 @@ async function send(mode, { away = false } = {}) {
       // The pipeline holds it back for Away when the task's 🌙 is on.
       const waits = awayOn() && !state.task.planning;
       await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
+      heldBack = waits;
       if (waits) notify("It waits in the pipeline's Ready until you go Away", "success");
       if (waits) void refreshTask();
     }
     else r = await call("thread_send", { thread: state.id, text, images, mode });
     input.value = "";
     state.attachments = [];
-    if (!toSub) state.picks.picked = {};
+    // Held back for Away: the picks show, locked, until it is sent.
+    if (!toSub && (away || heldBack)) holdPicks();
+    else if (!toSub) state.picks.picked = {};
     renderAttachments();
     renderLatest();
     renderSlash();
@@ -1930,7 +1969,9 @@ function saveDraft() {
   drafts.save(state.id, {
     text: input.value,
     images: state.attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name })),
-    picks: hasPicks(state.picks.picked) ? { replyId: state.picks.replyId, picked: state.picks.picked } : null,
+    picks: hasPicks(state.picks.picked) && !state.picks.sent
+      ? { replyId: state.picks.replyId, picked: state.picks.picked }
+      : null,
     answers: state.answers,
   });
 }

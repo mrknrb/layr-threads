@@ -4,6 +4,7 @@
 import {
   STATUS_LABEL,
   call,
+  defaultModelName,
   effortOptions,
   fillSelect,
   h,
@@ -558,10 +559,18 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
     pathRow.hidden = projectSel.value !== "__add";
     applyDefaults();
   }
+  /** The options with what "Default" stands for in the project's folder (Claude Code's settings there). */
+  const shown = () => {
+    const d = state.projects.find((x) => x.id === projectSel.value)?.claudeDefaults ?? {};
+    return { defaultName: defaultModelName(state.models, { setting: d.model }), defaultEffort: d.effort ?? null };
+  };
+  const modelOpts = () => modelOptions(state.models, { defaultName: shown().defaultName });
+  const effortOpts = () =>
+    effortOptions(state.models, model.value || "default", { defaultEffort: shown().defaultEffort });
   function applyDefaults() {
     const p = state.projects.find((x) => x.id === projectSel.value);
-    fillSelect(model, modelOptions(state.models), p?.defaultModel ?? "");
-    fillSelect(effort, effortOptions(state.models, model.value || "default"), p?.defaultEffort ?? "");
+    fillSelect(model, modelOpts(), p?.defaultModel ?? "");
+    fillSelect(effort, effortOpts(), p?.defaultEffort ?? "");
     fillSelect(mode, permissionOptions(), p?.defaultPermissionMode ?? "default");
   }
   projectSel.addEventListener("change", () => {
@@ -572,11 +581,11 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
       if (workspace === "existing") void loadWorktrees();
     }
   });
-  model.addEventListener("change", () => fillSelect(effort, effortOptions(state.models, model.value || "default"), effort.value));
+  model.addEventListener("change", () => fillSelect(effort, effortOpts(), effort.value));
   document.addEventListener("claude-models", () => {
     if (!model.isConnected) return;
-    fillSelect(model, modelOptions(state.models), model.value);
-    fillSelect(effort, effortOptions(state.models, model.value || "default"), effort.value);
+    fillSelect(model, modelOpts(), model.value);
+    fillSelect(effort, effortOpts(), effort.value);
   });
   async function addFolder() {
     const path = pathInput.value.trim().replace(/^"|"$/g, "");
@@ -731,13 +740,21 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
   const model = h("select", { class: "select" });
   const effort = h("select", { class: "select" });
   const mode = h("select", { class: "select" });
-  fillSelect(model, modelOptions(state.models), "");
-  fillSelect(effort, effortOptions(state.models, "default"), "");
-  model.addEventListener("change", () => fillSelect(effort, effortOptions(state.models, model.value || "default"), effort.value));
+  // What "Default" stands for in the plugins' folder (Claude Code's settings there).
+  const shown = () => {
+    const d = (state.projects.find(isPluginProject) ?? state.projects[0])?.claudeDefaults ?? {};
+    return { defaultName: defaultModelName(state.models, { setting: d.model }), defaultEffort: d.effort ?? null };
+  };
+  const modelOpts = () => modelOptions(state.models, { defaultName: shown().defaultName });
+  const effortOpts = () =>
+    effortOptions(state.models, model.value || "default", { defaultEffort: shown().defaultEffort });
+  fillSelect(model, modelOpts(), "");
+  fillSelect(effort, effortOpts(), "");
+  model.addEventListener("change", () => fillSelect(effort, effortOpts(), effort.value));
   document.addEventListener("claude-models", () => {
     if (!model.isConnected) return;
-    fillSelect(model, modelOptions(state.models), model.value);
-    fillSelect(effort, effortOptions(state.models, model.value || "default"), effort.value);
+    fillSelect(model, modelOpts(), model.value);
+    fillSelect(effort, effortOpts(), effort.value);
   });
 
   function update() {

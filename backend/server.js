@@ -18,6 +18,7 @@ import { Hub } from "./hub.js";
 import { linkIfReady, pluginsRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
 import { isPluginsRoot, listTargets, readManifest, resolveTarget, TARGET_KINDS, targetSystemPrompt } from "./targets.js";
+import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
 import { errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
 
@@ -170,6 +171,8 @@ tool("projects_list", "The project folders Claude threads work in, with their de
     ...p,
     kind: p.kind ?? (isPluginsRoot(p.path) ? "plugin" : "project"),
     exists: isDirectory(p.path),
+    // 0.4.0: what "Default model" and "Default effort" stand for in its folder (Claude Code's settings).
+    claudeDefaults: claudeDefaults(p.path),
     threads: Object.values(store.threads).filter((t) => t.projectId === p.id && !t.archived).length,
   })),
 }));

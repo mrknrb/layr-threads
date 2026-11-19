@@ -13,6 +13,7 @@
 import { getSubagentMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
+import { claudeDefaults } from "./defaults.js";
 import { CONFIG_RETRY_MS, configEmpty, isConfigBroken, repairEmptyConfig, restoreHint } from "./claudeConfig.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -561,6 +562,9 @@ export class Engine {
       folderGone: this.folderGone(meta),
       model: meta.model,
       effort: meta.effort,
+      // 0.4.0: the model Claude Code said it runs (its full id), and what "Default" stands for in its folder.
+      resolvedModel: meta.resolvedModel ?? null,
+      defaults: claudeDefaults(meta.cwd),
       thinking: meta.thinking,
       permissionMode: meta.permissionMode,
       sessionId: meta.sessionId,

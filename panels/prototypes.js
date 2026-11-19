@@ -11,6 +11,16 @@ const LINK = /layr:\/\/concepts\/prototype\/([^\s)"'<>\]]+)/gi;
 const MD_LINK = /\[([^\]\n]*)\]\(\s*layr:\/\/concepts\/prototype\/([^\s)"'<>]+)\s*\)/gi;
 const FIT = { min: 120, max: 560 };
 const DRAGGED = { min: 60, max: 3000 };
+/** The zoom steps, as the Concepts panel's prototypes (plugins/concepts/panels/model.js PROTOTYPE_ZOOMS). */
+export const ZOOMS = [25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+/** The plugin data key of the zooms set by hand: {[prototype id]: percent} (100 is not kept). */
+const ZOOM_KEY = "prototype-zoom";
+
+/** The next zoom step from `zoom` in `direction` (+1 in, -1 out); `zoom` itself at the end. */
+export function nextZoom(zoom, direction) {
+  const levels = direction > 0 ? ZOOMS : [...ZOOMS].reverse();
+  return levels.find((level) => (level - zoom) * direction > 0) ?? zoom;
+}
 
 /** The prototypes a text links to, each once, in order: [{id, title}] (the title: the Markdown link's text). */
 export function prototypeIds(text) {
@@ -85,6 +95,19 @@ let conceptsThere;
 const pages = new Map();
 /** Heights dragged by hand, by prototype id, so a reply drawn again keeps them. */
 const dragged = new Map();
+/** Zooms set by hand, by prototype id (plugin data ZOOM_KEY, read once). */
+let zooms = null;
+function loadZooms() {
+  zooms ??= Promise.resolve(globalThis.layr?.data?.get(ZOOM_KEY))
+    .then((v) => (v && typeof v === "object" ? v : {}))
+    .catch(() => ({}));
+  return zooms;
+}
+/** Keep the zooms (the object loadZooms gave, changed in place). */
+async function saveZooms() {
+  const all = await loadZooms();
+  await Promise.resolve(globalThis.layr?.data?.set(ZOOM_KEY, all)).catch(() => {});
+}
 /** Frames shown, for the one message listener: each a function setting its page's height, with its `frame`. */
 const fits = new Set();
 
@@ -158,14 +181,34 @@ async function fill(el, list, again = false) {
   const loaded = await Promise.all(list.map((p) => loadPage(p.id, again)));
   if (conceptsThere === false || loaded.every((p) => p === null)) return el.remove();
   const css = await baseCss();
+  const saved = await loadZooms();
   const many = list.length > 1;
   const reload = h("button", { class: "proto-btn", title: "Run it again" }, "↻");
   reload.addEventListener("click", () => void fill(el, list, true));
   const open = h("button", { class: "proto-btn proto-open", title: "Open it in Concepts" }, "Open in Concepts ↗");
   open.addEventListener("click", () => void openLink(linkOf(list[0].id)));
   const title = many ? `${list.length} prototypes` : list[0].title || "Prototype";
+  // One zoom for the strip's pages, as the Concepts panel's (remembered per prototype in the plugin's data).
+  const zoomOf = () => Number(saved[list[0].id]) || 100;
+  const zoomLabel = h("button", { class: "proto-btn proto-zoom", title: "The page's zoom (click: 100%)" }, "");
+  const setZoom = (zoom) => {
+    for (const p of list) {
+      if (zoom === 100) delete saved[p.id];
+      else saved[p.id] = zoom;
+    }
+    zoomLabel.textContent = `${zoom}%`;
+    for (const frame of frames) frame.zoom(zoom);
+    void saveZooms();
+  };
+  const zoomOut = h("button", { class: "proto-btn", title: "Zoom the page out" }, "−");
+  const zoomIn = h("button", { class: "proto-btn", title: "Zoom the page in" }, "+");
+  zoomOut.addEventListener("click", () => setZoom(nextZoom(zoomOf(), -1)));
+  zoomIn.addEventListener("click", () => setZoom(nextZoom(zoomOf(), 1)));
+  zoomLabel.addEventListener("click", () => setZoom(100));
+  zoomLabel.textContent = `${zoomOf()}%`;
+  const frames = [];
   const head = h("div", { class: "proto-head" }, h("span", { class: "proto-title" }, `▣ ${title}`),
-    h("span", { class: "grow" }), reload, many ? null : open);
+    h("span", { class: "grow" }), zoomOut, zoomLabel, zoomIn, reload, many ? null : open);
   const columns = h("div", { class: `proto-columns${many ? " many" : ""}` }, list.map((p, i) => {
     const page = loaded[i];
     const label = many
@@ -176,22 +219,39 @@ async function fill(el, list, again = false) {
       return h("div", { class: "proto-column" }, label, h("div", { class: "proto-note" },
         `Couldn't show it: ${page?.error ?? "no concepts plugin"}`));
     }
-    return h("div", { class: "proto-column" }, label, frameFor(p, page.html, css));
+    const shown = frameFor(p, page.html, css, zoomOf());
+    frames.push(shown);
+    return h("div", { class: "proto-column" }, label, shown);
   }));
   el.replaceChildren(head, columns);
   el.hidden = false;
 }
 
-/** One page in its frame, as tall as the page (within limits) until its bottom edge is dragged. */
-function frameFor(p, html, css) {
+/**
+ * One page in its frame, as tall as the page (within limits) until its bottom edge is dragged. Zoomed as a browser
+ * zooms (as the Concepts panel's): the frame is laid out bigger or smaller than its box and scaled to fit, so the
+ * page's percents and media queries follow. The element's `zoom(percent)` changes it.
+ */
+function frameFor(p, html, css, zoom = 100) {
   const frame = h("iframe", { class: "proto-frame", sandbox: "allow-scripts", title: p.title || "Prototype",
     srcdoc: prototypeDocument(html, theme(), css) });
   const box = h("div", { class: "proto-box" }, frame);
-  let fitted = 240;
-  const setHeight = () => (box.style.height = `${dragged.get(p.id) ?? fitted}px`);
+  let pageHeight = 240;
+  let scale = zoom / 100;
+  const setHeight = () => {
+    const fitted = Math.min(FIT.max, Math.max(FIT.min, Math.ceil(pageHeight * scale)));
+    box.style.height = `${dragged.get(p.id) ?? fitted}px`;
+  };
+  const setScale = () => {
+    frame.style.width = `${100 / scale}%`;
+    frame.style.height = `${100 / scale}%`;
+    frame.style.transform = scale === 1 ? "" : `scale(${scale})`;
+    frame.style.transformOrigin = "0 0";
+  };
+  setScale();
   setHeight();
   const fit = (height) => {
-    fitted = Math.min(FIT.max, Math.max(FIT.min, Math.ceil(height)));
+    pageHeight = height;
     setHeight();
   };
   fit.frame = frame;
@@ -225,7 +285,13 @@ function frameFor(p, html, css) {
     dragged.delete(p.id);
     setHeight();
   });
-  return h("div", { class: "proto-page" }, box, grip);
+  const el = h("div", { class: "proto-page" }, box, grip);
+  el.zoom = (percent) => {
+    scale = percent / 100;
+    setScale();
+    setHeight();
+  };
+  return el;
 }
 
 /** For tests: forget what was learned about the concepts plugin. */
@@ -233,4 +299,5 @@ export function resetPrototypes() {
   conceptsThere = undefined;
   pages.clear();
   dragged.clear();
+  zooms = null;
 }

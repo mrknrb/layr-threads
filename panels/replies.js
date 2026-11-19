@@ -6,7 +6,8 @@ import { h } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
 
 /**
- * The reply's element. `picker` (latest reply only): {picked, onPick(question, letter), onAgree()}; without it the
+ * The reply's element. `picker` (latest reply only): {picked, onPick(question, letter), onAgree(), locked?: the
+ * picks were sent and only show}; without it the
  * answers are shown, not pickable. Gives {el, sections} (sections null for plain Markdown).
  */
 export function renderReply(text, picker = null) {
@@ -32,7 +33,8 @@ function part(p, picker) {
       const on = agreed(picker.picked);
       const agree = h("button", { class: `box-agree${on ? " chosen" : ""}`, title: on ? "Take it back" :
         "Agree with every ⭐ answer (questions you don't answer otherwise aren't agreed to)" }, on ? "✓ " : "", AGREE_TEXT);
-      agree.addEventListener("click", () => picker.onAgree());
+      if (picker.locked) agree.disabled = true;
+      else agree.addEventListener("click", () => picker.onAgree());
       out.append(agree);
     }
     return out;
@@ -88,12 +90,12 @@ function question(q, picker) {
   const picks = picker?.picked?.[q.number];
   const chosen = chosenOf(q, picks);
   const option = (letter, text, starred, why, score) => {
-    const b = h("button", { class: `box-option${chosen.includes(letter) ? " chosen" : ""}${letter === NONE ? " none" : ""}`, disabled: !picker },
+    const b = h("button", { class: `box-option${chosen.includes(letter) ? " chosen" : ""}${letter === NONE ? " none" : ""}`, disabled: !picker || picker.locked },
       h("span", { class: "box-option-letter" }, letter === NONE ? "–" : letter, starred ? h("span", { class: "box-option-star", title: "Recommended" }, "⭐") : null),
       h("span", { class: "box-option-text" }, inlineMarkdown(text),
         score !== undefined ? h("span", { class: `box-option-score ${score >= 80 ? "high" : score >= 50 ? "mid" : "low"}`, title: "How reasonable Claude thinks this answer is" }, `${score}%`) : null,
         why ? h("span", { class: "box-option-why" }, ` ${why}`) : null));
-    if (picker) b.addEventListener("click", () => picker.onPick(q, letter));
+    if (picker && !picker.locked) b.addEventListener("click", () => picker.onPick(q, letter));
     return b;
   };
   return h("div", { class: `box-question${picks?.length ? " changed" : ""}` },

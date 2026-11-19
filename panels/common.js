@@ -175,8 +175,13 @@ const FALLBACK_MODELS = [
   { id: "haiku", label: "Haiku" },
 ];
 
-export function modelOptions(models, { includeDefault = true } = {}) {
-  const out = includeDefault ? [{ value: "", label: "Default model" }] : [];
+/**
+ * The options of a model picker. `defaultName`: which model "Default model" stands for (defaultModelName), shown
+ * after it.
+ */
+export function modelOptions(models, { includeDefault = true, defaultName = null } = {}) {
+  const label = defaultName ? `Default model (${defaultName})` : "Default model";
+  const out = includeDefault ? [{ value: "", label }] : [];
   const list = models?.length ? models : FALLBACK_MODELS;
   for (const m of list) {
     if (m.id === "default") continue;
@@ -185,10 +190,36 @@ export function modelOptions(models, { includeDefault = true } = {}) {
   return out;
 }
 
-export function effortOptions(models, modelId) {
+/** A model id as people say it: "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-5-5[1m]" → "Sonnet 5.5 (1M)". */
+export function modelName(id) {
+  const s = String(id ?? "").trim();
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/i.exec(s);
+  if (!m) return s;
+  const family = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+  return `${family} ${m[2]}${m[3] ? `.${m[3]}` : ""}${m[4] ? " (1M)" : ""}`;
+}
+
+/**
+ * Which model "Default model" stands for, or null when nothing says: the one Claude Code said a thread runs
+ * (`resolved`), else the `model` of Claude Code's settings (`setting`: an alias or an id), else what its "default"
+ * entry says ("… (currently Opus 5.5)").
+ */
+export function defaultModelName(models, { resolved = null, setting = null } = {}) {
+  if (resolved) return modelName(resolved);
+  const list = models ?? [];
+  if (setting) return list.find((m) => m.id === setting && m.id !== "default")?.label ?? modelName(setting);
+  const d = list.find((m) => m.id === "default");
+  if (d?.resolved) return modelName(d.resolved);
+  const said = /currently ([^)·,]+)/i.exec(d?.description ?? "");
+  return said ? said[1].trim() : null;
+}
+
+/** The options of an effort picker for `modelId`. `defaultEffort`: what "Default effort" stands for, after it. */
+export function effortOptions(models, modelId, { defaultEffort = null } = {}) {
   const m = models.find((x) => x.id === modelId) ?? models.find((x) => x.id === "default") ?? null;
   const efforts = m?.efforts?.length ? m.efforts : ["low", "medium", "high", "xhigh", "max"];
-  return [{ value: "", label: "Default effort" }, ...efforts.map((e) => ({ value: e, label: `Effort: ${e}` }))];
+  return [{ value: "", label: defaultEffort ? `Default effort (${defaultEffort})` : "Default effort" },
+    ...efforts.map((e) => ({ value: e, label: `Effort: ${e}` }))];
 }
 
 export function permissionOptions() {

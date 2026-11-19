@@ -149,9 +149,12 @@ try {
   await tc.locator(".proto-columns").scrollIntoViewIfNeeded();
   const boxes = tc.locator(".proto-box");
   const heights = async () => [await boxes.nth(0).evaluate((e) => e.offsetHeight), await boxes.nth(1).evaluate((e) => e.offsetHeight)];
+  // Until both pages said how tall they are: the heights stay the same between two readings.
   let [h1, h2] = await heights();
-  for (let i = 0; i < 25 && !(h2 > h1); i++) {
+  let before = [];
+  for (let i = 0; i < 25 && !(h2 > h1 && before[0] === h1 && before[1] === h2); i++) {
     await page.waitForTimeout(200);
+    before = [h1, h2];
     [h1, h2] = await heights();
   }
   check(h2 > h1 && h1 >= 120, "each as tall as its page", `${h1} / ${h2}`);
@@ -167,6 +170,12 @@ try {
   const inner = tc.frameLocator("iframe.proto-frame >> nth=0");
   await inner.locator("#sort").click();
   check(/sorted/.test(await inner.locator("body").textContent()), "the page's own script runs");
+  // The strip's zoom, as in Concepts: + zooms its pages in, the percent goes back to 100%.
+  await tc.locator(".proto-head .proto-btn", { hasText: "+" }).click();
+  check((await tc.locator(".proto-zoom").textContent()) === "110%", "+ zooms the pages in");
+  check(/scale\(1\.1\)/.test(await frames.first().evaluate((e) => e.style.transform)), "the frame is scaled");
+  await tc.locator(".proto-zoom").click();
+  check((await tc.locator(".proto-zoom").textContent()) === "100%", "the percent goes back to 100%");
   await page.screenshot({ path: path.join(out, "16a-prototypes.png") });
   await tc.locator(".proto-label", { hasText: "Sort menu" }).click();
   const chipC = tc.locator("#concepts-chip");

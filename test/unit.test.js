@@ -22,6 +22,8 @@ import {
   toggleAgree,
 } from "../panels/boxes.js";
 import { createDraftStore, isBlankDraft } from "../panels/drafts.js";
+import { defaultModelName, effortOptions, modelName, modelOptions } from "../panels/common.js";
+import { claudeDefaults, forgetDefaults } from "../backend/defaults.js";
 import { foldLabel, foldTurn, groupRuns, summarize, tokensLabel } from "../panels/folds.js";
 
 const REPLY = `## Summary
@@ -398,4 +400,42 @@ test("thread_list: the plugin filter (0.3.14)", () => {
   const pluginOf = (t) => t.extra?.pluginId ?? /[\/]packages[\/]([^\/]+)[\/]merge$/.exec(t.cwd ?? "")?.[1] ?? null;
   assert.deepEqual(engine.list({ plugin: "wiki", pluginOf }).map((t) => t.id).sort(), ["a", "c"]);
   assert.equal(engine.list({}).length, 4);
+});
+
+test("what Default model and Default effort stand for (0.4.0)", () => {
+  assert.equal(modelName("claude-opus-5-5"), "Opus 5.5");
+  assert.equal(modelName("claude-sonnet-5-5[1m]"), "Sonnet 5.5 (1M)");
+  assert.equal(modelName("claude-opus-4-20250514"), "Opus 4");
+  assert.equal(modelName("some-model"), "some-model");
+  const models = [
+    { id: "default", label: "Default (recommended)", description: "Use the default model (currently Opus 5.5)" },
+    { id: "sonnet", label: "Sonnet", efforts: ["low", "high"] },
+  ];
+  assert.equal(defaultModelName(models, { resolved: "claude-haiku-5-5", setting: "sonnet" }), "Haiku 5.5");
+  assert.equal(defaultModelName(models, { setting: "sonnet" }), "Sonnet");
+  assert.equal(defaultModelName(models, { setting: "claude-fable-5-2" }), "Fable 5.2");
+  assert.equal(defaultModelName(models), "Opus 5.5");
+  assert.equal(defaultModelName([]), null);
+  assert.equal(modelOptions(models, { defaultName: "Opus 5.5" })[0].label, "Default model (Opus 5.5)");
+  assert.equal(modelOptions(models)[0].label, "Default model");
+  assert.equal(effortOptions(models, "sonnet", { defaultEffort: "high" })[0].label, "Default effort (high)");
+  assert.equal(effortOptions(models, "sonnet")[0].label, "Default effort");
+
+  // Claude Code's settings: the folder's local over its shared over the user's; ANTHROPIC_MODEL over all.
+  const files = {
+    [path.join("/home", "settings.json")]: { model: "opus", effortLevel: "medium" },
+    [path.join("/work", ".claude", "settings.json")]: { effortLevel: "high" },
+    [path.join("/work", ".claude", "settings.local.json")]: { model: "sonnet" },
+  };
+  const read = (f) => files[f] ?? null;
+  forgetDefaults();
+  assert.deepEqual(claudeDefaults("/work", { env: { CLAUDE_CONFIG_DIR: "/home" }, read }),
+    { model: "sonnet", effort: "high" });
+  forgetDefaults();
+  assert.deepEqual(claudeDefaults("/other", { env: { CLAUDE_CONFIG_DIR: "/home", ANTHROPIC_MODEL: "haiku" }, read }),
+    { model: "haiku", effort: "medium" });
+  forgetDefaults();
+  assert.deepEqual(claudeDefaults("/none", { env: { CLAUDE_CONFIG_DIR: "/nobody" }, read }),
+    { model: null, effort: null });
+  forgetDefaults();
 });
