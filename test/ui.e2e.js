@@ -288,6 +288,29 @@ try {
   await page.goto(`${base}/?open=t_demo1&theme=light`);
   await page.frameLocator("#right iframe.on").locator(".box-summary").waitFor({ timeout: 20_000 });
   await page.screenshot({ path: path.join(out, "19-light.png") });
+
+  // Go back (0.3.13): your message's Go back warns first; Cancel changes nothing; Go back cuts the chat before the
+  // message and gives it back to the composer.
+  await page.goto(`${base}/?open=t_demo3`);
+  const t4 = page.frameLocator("#right iframe.on");
+  const firstUser = t4.locator(".user-wrap").first();
+  await firstUser.waitFor({ timeout: 20_000 });
+  const sent = (await firstUser.locator(".msg-user").textContent()).trim();
+  const turnsBefore = await t4.locator(".turn").count();
+  await firstUser.hover();
+  await firstUser.locator(".go-back").click();
+  const warning = (await firstUser.locator(".confirm-text").textContent()) ?? "";
+  check(/Claude forgets them\. Files are not changed back/.test(warning), "Go back warns first", warning);
+  await page.screenshot({ path: path.join(out, "20-go-back-warning.png") });
+  await firstUser.locator(".confirm button", { hasText: "Cancel" }).click();
+  check((await t4.locator(".turn").count()) === turnsBefore, "Cancel changes nothing");
+  await firstUser.hover();
+  await firstUser.locator(".go-back").click();
+  await firstUser.locator(".confirm button", { hasText: "Go back" }).click();
+  await t4.locator(".sys", { hasText: "Went back to before" }).waitFor({ timeout: 10_000 });
+  check((await t4.locator(".user-wrap").count()) === 0, "the message and what followed left the chat");
+  check((await t4.locator("#input").inputValue()).trim() === sent, "its text is back in the composer", sent);
+  await page.screenshot({ path: path.join(out, "21-went-back.png") });
 } catch (error) {
   failures++;
   console.error("ERROR", error);

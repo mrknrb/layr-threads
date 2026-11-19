@@ -2,6 +2,7 @@
 //   projects.json              the folders the user works in
 //   threads/index.json         every thread's metadata (the list the panels show)
 //   threads/<id>.jsonl         a thread's transcript, one entry per line, numbered by `seq`
+//   threads/<id>.went-back.jsonl  what going back took out of it, kept
 //   threads/<id>/              its pasted images
 import { appendFileSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -171,6 +172,28 @@ export class Store {
     return { entries: more ? entries.slice(entries.length - limit) : entries, more };
   }
 
+  /**
+   * Going back: the entries from `seq` on leave the transcript, kept in threads/<id>.went-back.jsonl. Later entries
+   * go on numbering after the last one there was, so a seq never comes back. Gives the entries taken out.
+   */
+  cutTranscript(id, seq) {
+    const entries = this.readTranscript(id);
+    const cut = entries.filter((e) => e.seq >= seq);
+    if (!cut.length) return [];
+    const at = nowIso();
+    appendFileSync(this.wentBackFile(id), cut.map((e) => `${JSON.stringify({ ...e, wentBackAt: at })}
+`).join(""));
+    const kept = entries.filter((e) => e.seq < seq);
+    writeFileAtomic(this.transcriptFile(id), kept.map((e) => `${JSON.stringify(e)}
+`).join(""));
+    this.seqs.set(id, Math.max(this.lastSeq(id), entries.at(-1).seq));
+    return cut;
+  }
+
+  wentBackFile(id) {
+    return path.join(this.threadsDir, `${id}.went-back.jsonl`);
+  }
+
   saveAttachment(id, name, buffer) {
     const file = path.join(this.attachmentsDir(id), name);
     writeFileSync(file, buffer);
@@ -184,6 +207,7 @@ export class Store {
 
   deleteThreadFiles(id) {
     rmSync(this.transcriptFile(id), { force: true });
+    rmSync(this.wentBackFile(id), { force: true });
     rmSync(path.join(this.threadsDir, id), { recursive: true, force: true });
   }
 }

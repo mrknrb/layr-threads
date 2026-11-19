@@ -29,6 +29,7 @@ import { markdown, setMarkdownHooks, toolIcon, toolInputView, toolLabel, toolSum
 import { renderReply } from "./replies.js";
 import {
   adoptThread,
+  confirmIn,
   contextMenu,
   copyText,
   onPhone,
@@ -188,7 +189,21 @@ function handleEvent(ev) {
     if (near) scrollToBottom();
   } else if (ev.kind === "status" && ev.thread) {
     setThread(ev.thread);
+  } else if (ev.kind === "reset") {
+    // The thread went back (here or in another panel): the transcript lost its end, draw it again.
+    void reloadTranscript();
   }
+}
+
+/** The transcript drawn again from the start, nothing kept from what was shown. */
+function reloadTranscript() {
+  state.tools.clear();
+  state.approvals.clear();
+  state.answered.clear();
+  for (const block of state.live.values()) block.el?.remove();
+  state.live.clear();
+  state.latest = null;
+  return loadTranscript();
 }
 
 let filling = false;
@@ -708,7 +723,53 @@ function userBubble(e) {
     el.append(imgs);
   }
   if (e.text) el.append(e.text);
-  return h("div", { class: "user-wrap" }, el, when(e.ts));
+  const foot = h("div", { class: "user-foot" }, when(e.ts));
+  if (!e.steer) {
+    const title = "Go back to before this message: it and what came after leave the chat";
+    const back = h("button", { class: "go-back", title }, icon("undo", 12), "Go back");
+    back.addEventListener("click", () => void goBack(e, foot));
+    foot.append(back);
+  }
+  return h("div", { class: "user-wrap" }, el, foot);
+}
+
+/** Claude is working (or its background tasks are): going back waits. */
+function isBusy(t) {
+  return Boolean(t) && (["running", "waiting", "starting"].includes(t.status) || Boolean(t.background?.length));
+}
+
+/**
+ * Go back to before the message `e`, after a warning in place of its foot: it and everything after it leave the chat
+ * and Claude's memory, files stay; its text and images come back into the composer.
+ */
+async function goBack(e, foot) {
+  if (isBusy(state.thread)) {
+    notify("Claude is working: stop it first, then go back", "error");
+    return;
+  }
+  const at = main.turns.findIndex((t) => t.user === foot.parentElement);
+  const later = at >= 0 ? main.turns.length - at - 1 : 0;
+  const after = later ? ` and the ${later} message${later > 1 ? "s" : ""} after it` : "";
+  const text = `Go back to before this message? It${after}, with Claude's work, leave the chat, and Claude forgets ` +
+    "them. Files are not changed back: what Claude edited stays.";
+  if (!(await confirmIn(foot, text, { ok: "Go back", danger: true }))) return;
+  try {
+    const r = await call("thread_go_back", { thread: state.id, seq: e.seq });
+    const typed = input.value.trim();
+    input.value = typed ? `${r.text}
+
+${typed}` : r.text;
+    const images = (r.images ?? []).map((i) => ({ ...i, url: `data:${i.mediaType};base64,${i.data}` }));
+    state.attachments = [...images, ...state.attachments];
+    renderAttachments();
+    autosize();
+    saveDraft();
+    if (r.thread) setThread(r.thread);
+    await reloadTranscript();
+    input.focus();
+  } catch (error) {
+    notify(error.message, "error");
+  }
 }
 
 /**
@@ -1097,6 +1158,7 @@ function setThread(t) {
     state.titleSet = true;
   }
   $("status-dot").className = `dot ${t.status}`;
+  document.body.classList.toggle("busy", isBusy(t));
   $("status-label").textContent = `${STATUS_LABEL[t.status] ?? t.status}${t.archived ? " · archived" : ""}`;
   const ws = t.workspace ?? {};
   const wsEl = $("workspace");

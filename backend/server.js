@@ -325,6 +325,15 @@ tool(
 );
 
 tool(
+  "thread_go_back",
+  "Go back to just before one of the user's messages (its transcript `seq`; one that started a turn): it and " +
+    "everything after it leave the chat and Claude's memory (the session forks from the entry before it). Files are " +
+    "not changed back. Not while the thread runs. Gives the message's text and images, to send again or change.",
+  { thread: threadId, seq: z.number().int() },
+  (a) => engine.goBack(a.thread, a.seq),
+);
+
+tool(
   "thread_list",
   "Threads, latest activity first, with status: running, waiting (for an approval or answer), done, failed, interrupted.",
   {

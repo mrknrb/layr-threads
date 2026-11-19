@@ -182,6 +182,15 @@ details.tool.needs-you { border-color: var(--warn);
 .user-wrap { align-self: flex-end; max-width: 85%; display: flex; flex-direction: column; align-items: flex-end;
   gap: 2px; }
 .user-wrap .msg-user { max-width: 100%; align-self: auto; }
+/* Under your message: its time, and Go back (on hover; always on touch screens; dimmed while Claude works) */
+.user-foot { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.user-foot .confirm { max-width: 520px; justify-content: flex-end; font-size: 12px; }
+.go-back { display: inline-flex; gap: 3px; align-items: center; background: none; border: 0; padding: 0 2px;
+  font: inherit; font-size: 10.5px; color: var(--fg-dim); cursor: pointer; visibility: hidden; }
+.user-wrap:hover .go-back, .go-back:focus-visible { visibility: visible; }
+.go-back:hover { color: var(--fg); }
+@media (hover: none) { .go-back { visibility: visible; } }
+.busy .go-back { opacity: 0.4; cursor: not-allowed; }
 .when { font-size: 10.5px; color: var(--fg-dim); opacity: 0.8; cursor: default; }
 .msg-text > .when { display: block; margin-top: 3px; }
 .fold-row { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--fg-dim);

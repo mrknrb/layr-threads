@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import { baseRef as findBaseRef } from "./changes.js";
 import { createWorktree, currentBranch, isGitRepo, restoreWorktree } from "./git.js";
+import { findForkPoint, readSessionFile } from "./goBack.js";
 import { findSubagent, relayPrompt, subagentEntries, userText } from "./subagents.js";
 import { threadSettings } from "./threadSettings.js";
 import {
@@ -1037,6 +1038,87 @@ export class Engine {
     return { text: last.relay ? relayPrompt(last.relay, last.text ?? "") : last.text ?? "", images: last.images ?? [] };
   }
 
+  /**
+   * Go back to just before one of your messages (`seq`, one that started a turn): it and everything after it leave the
+   * chat (kept in a side file) and Claude's memory: the next message resumes the session up to the entry before it, in
+   * a fork (the old session stays on disk). Files are not changed back. Not while Claude works. Gives the message's
+   * text and images, for the composer.
+   */
+  async goBack(id, seq) {
+    const meta = this.requireThread(id);
+    const live = this.lives.get(id);
+    if (live?.turnActive || ["running", "waiting", "starting"].includes(meta.status)) {
+      throw new Error("Claude is working: stop it first, then go back");
+    }
+    if (live?.background.size) {
+      throw new Error("Claude's background tasks are still running: wait for them, or stop them");
+    }
+    const entries = this.store.readTranscript(id);
+    const target = entries.find((e) => e.seq === Number(seq));
+    if (!target || target.type !== "user" || target.steer || target.auto || target.relay || target.parent) {
+      throw new Error("Go back works on a message you sent that started a turn");
+    }
+    // The main conversation's messages (not what subagents were told), as Claude Code got them: a message to a
+    // subagent went as the relay instructions.
+    const users = entries
+      .filter((e) => e.type === "user" && !e.parent && e.by !== "claude")
+      .map((e) => (e.relay ? { ...e, text: relayPrompt(e.relay, e.text ?? "") } : e));
+    let point = { fresh: true };
+    if (users[0] !== target) {
+      const lines = readSessionFile(sessionFile(meta.cwd, meta.sessionId));
+      point = lines && findForkPoint(lines, users, target);
+      if (!point) {
+        throw new Error(
+          "Claude's session doesn't have this message any more (it started over since): go back to a later one",
+        );
+      }
+    }
+    if (live) this.closeLive(id, "went back");
+    this.cancelConfigRetry(id);
+    const cut = this.store.cutTranscript(id, target.seq);
+    const kept = entries.filter((e) => e.seq < target.seq);
+    const lastEnd = kept.findLast((e) => e.type === "turn_end");
+    const todos = kept.findLast((e) => e.type === "tool_use" && e.name === "TodoWrite" && !e.parent)?.input?.todos;
+    const lastText = kept.findLast((e) => e.type === "text" && !e.parent)?.text;
+    this.store.updateThread(id, {
+      ...(point.fresh
+        ? { sessionId: randomUUID(), sessionStarted: false, goBack: null }
+        : { goBack: { at: point.at, from: meta.sessionId } }),
+      // Sessions from before hold what was just taken out: never resumed again.
+      earlierSessions: [],
+      status: lastEnd?.status ?? "done",
+      error: null,
+      contextTokens: null,
+      todos: Array.isArray(todos)
+        ? todos.map((t) => ({ content: t.content, status: t.status, activeForm: t.activeForm }))
+        : [],
+      preview: lastText ? preview(lastText) : "",
+    });
+    const later = cut.filter((e) => e.type === "user" && !e.auto && !e.steer && !e.parent && e.by !== "claude").length
+      - 1;
+    const quote = truncate(String(target.text ?? "").replace(/\s+/g, " ").trim() || "(image)", 60);
+    const after = later ? ` and the ${later} message${later > 1 ? "s" : ""} after it` : "";
+    this.store.append(id, {
+      type: "system",
+      subtype: "went_back",
+      text: `Went back to before "${quote}": it${after}, with Claude's work, left the chat and Claude's memory. ` +
+        "Files were not changed back.",
+      removed: cut.length,
+    });
+    this.hub.emit(`claude:thread.${id}`, { kind: "reset" });
+    this.emitThread(meta);
+    const images = [];
+    for (const img of target.images ?? []) {
+      try {
+        const data = this.store.readAttachment(id, img.name).toString("base64");
+        images.push({ name: img.name, mediaType: img.mediaType, data });
+      } catch {
+        // gone from disk: only the text comes back
+      }
+    }
+    return { thread: this.summary(meta), text: target.text ?? "", images };
+  }
+
   /** Try again: the thread's last message sent once more, in the same session (a turn that failed or was stopped). */
   async retry(id) {
     const meta = this.requireThread(id);
@@ -1101,7 +1183,9 @@ export class Engine {
     if (fresh) {
       meta.sessionId = randomUUID();
       meta.sessionStarted = false;
+      if (meta.goBack) this.store.updateThread(meta.id, { goBack: null });
     }
+    live.goBack = resume ? meta.goBack ?? null : null;
     const effort = meta.effort && (!modelInfo || !modelInfo.efforts.length || modelInfo.efforts.includes(meta.effort))
       ? meta.effort
       : undefined;
@@ -1133,7 +1217,7 @@ export class Engine {
       },
       env: claudeEnv(),
       stderr: (data) => log(`[${meta.id} stderr] ${String(data).trimEnd()}`),
-      ...(resume ? { resume: meta.sessionId, ...(fork ? { forkSession: true } : {}) } : { sessionId: meta.sessionId }),
+      ...sessionOptions(meta, { resume, fork, goBack: live.goBack }),
     };
     live.resumed = resume;
     live.query = query({ prompt: input, options });
@@ -1160,8 +1244,8 @@ export class Engine {
         this.configBroken(meta, live, text);
         return;
       }
-      if (resumed && isSessionGone(text) && !live.closed && !live.sawOutput) {
-        await this.restartFresh(meta, live);
+      if (resumed && (isSessionGone(text) || live.goBack) && !live.closed && !live.sawOutput) {
+        await this.restartFresh(meta, live, { earlier: !live.goBack });
         return;
       }
       if (live.closed) return;
@@ -1188,12 +1272,14 @@ export class Engine {
   }
 
   /** Claude Code prunes old transcripts: start a new session with the conversation so far in the prompt. */
-  async restartFresh(meta, live) {
+  /** `earlier: false`: not an earlier session either (going back failed: those hold what was taken out). */
+  async restartFresh(meta, live, { earlier: useEarlier = true } = {}) {
     const wasActive = live.turnActive;
     live.turnActive = false;
     this.closeLive(meta.id, "session gone");
     // An earlier session of the thread that is still on disk: resumed instead of starting over.
-    const earlier = (meta.earlierSessions ?? []).find((s) => s !== meta.sessionId && existsSync(sessionFile(meta.cwd, s)));
+    const earlier = useEarlier &&
+      (meta.earlierSessions ?? []).find((s) => s !== meta.sessionId && existsSync(sessionFile(meta.cwd, s)));
     if (earlier) {
       log(`session ${meta.sessionId} of ${meta.id} is gone, resuming its earlier one ${earlier}`);
       this.store.updateThread(meta.id, {
@@ -1213,7 +1299,12 @@ export class Engine {
       return;
     }
     log(`session of ${meta.id} is gone, starting over`);
-    this.store.append(meta.id, { type: "system", text: "The old Claude session was gone; started a new one with the conversation so far." });
+    this.store.append(meta.id, {
+      type: "system",
+      text: useEarlier
+        ? "The old Claude session was gone; started a new one with the conversation so far."
+        : "Going back in Claude's session didn't work; started a new one with the conversation so far.",
+    });
     this.emitEntry(meta.id, this.lastEntry);
     try {
       const fresh = await this.openLive(meta, { fresh: true });
@@ -1266,8 +1357,15 @@ export class Engine {
     // still reports a session id of its own, which has no transcript, and taking it would lose the conversation.
     const init = msg.type === "system" && msg.subtype === "init";
     if (msg.session_id && msg.session_id !== meta.sessionId && (init || live.sawInit)) {
-      const earlier = [meta.sessionId, ...(meta.earlierSessions ?? [])].filter((s) => s && s !== msg.session_id);
+      // Gone back: the session forked from holds what was taken out, so it is no earlier session to fall back on.
+      const earlier = [...(live.goBack ? [] : [meta.sessionId]), ...(meta.earlierSessions ?? [])]
+        .filter((s) => s && s !== msg.session_id);
       this.store.updateThread(id, { sessionId: msg.session_id, earlierSessions: [...new Set(earlier)].slice(0, 5) });
+    }
+    // Claude answers in the fork: going back is done.
+    if (live.goBack && msg.type === "assistant") {
+      live.goBack = null;
+      this.store.updateThread(id, { goBack: null });
     }
     switch (msg.type) {
       case "system":
@@ -1477,8 +1575,10 @@ export class Engine {
       this.configBroken(meta, live, errors);
       return;
     }
-    if (live.resumed && !live.sawOutput && msg.subtype !== "success" && isSessionGone((msg.errors ?? []).join("\n"))) {
-      void this.restartFresh(meta, live);
+    if (live.resumed && !live.sawOutput && msg.subtype !== "success" &&
+      (isSessionGone((msg.errors ?? []).join("\n")) || live.goBack)) {
+      log(`resuming ${meta.id} failed: ${(msg.errors ?? []).join("; ")}`);
+      void this.restartFresh(meta, live, { earlier: !live.goBack });
       return;
     }
     const total = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : null;
@@ -1793,6 +1893,13 @@ export function restartNote(at, waiting) {
 }
 
 /** Where Claude Code keeps a session's transcript: `<config home>/projects/<the folder, as a name>/<id>.jsonl`. */
+/** How a new query finds its session: a new one, resumed, resumed into a fork, or forked at the go-back point. */
+export function sessionOptions(meta, { resume, fork = false, goBack = null }) {
+  if (!resume) return { sessionId: meta.sessionId };
+  if (goBack?.at) return { resume: meta.sessionId, resumeSessionAt: goBack.at, forkSession: true };
+  return { resume: meta.sessionId, ...(fork ? { forkSession: true } : {}) };
+}
+
 export function sessionFile(cwd, sessionId, env = process.env) {
   const home = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
   return path.join(home, "projects", String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
