@@ -39,6 +39,7 @@ import {
   openLink,
   pipelineCall,
   pluginCall,
+  pluginPageLink,
   threadLink,
   threadTask,
 } from "./ui.js";
@@ -401,12 +402,24 @@ function drawEntry(e, into) {
         if (!e.failedMcp?.length) return null;
         return kept(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
       }
+      if (e.subtype === "saved" && e.commit) return kept(savedLine(e));
       return kept(h("div", { class: `sys${e.subtype === "background_lost" ? " warn" : ""}` }, e.text));
     case "error":
       return kept(e.retry ? retryBox(e) : h("div", { class: "error-box" }, e.message));
     default:
       return null;
   }
+}
+
+/** "Saved as a version: …" after a turn, with the commit as a chip that opens it in the plugin page's History. */
+function savedLine(e) {
+  const short = e.short ?? String(e.commit).slice(0, 7);
+  const chip = e.plugin
+    ? h("button", { class: "commit-chip", title: "Open this version in the plugin's History" },
+      icon("history", 11), short)
+    : h("span", { class: "commit-chip", title: e.commit }, short);
+  if (e.plugin) chip.addEventListener("click", () => openLink(pluginPageLink(e.plugin, "history", e.commit)));
+  return h("div", { class: "sys saved" }, e.text, " ", chip);
 }
 
 /** A failure the thread can get over by sending its last message again (Claude Code couldn't read its config). */
@@ -1405,7 +1418,7 @@ function threadMenu(ev) {
     state.phone ? null : "-",
     state.task === null && !t.archived ? { label: "+ Pipeline", icon: "view_kanban", run: () => adoptThread(state.id).then(() => refreshTask()) } : null,
     t.target?.plugin && t.target.place !== "inside"
-      ? { label: "History and undo (My plugins)", icon: "history", run: () => layr.panels.open("main", { plugin: t.target.plugin }, { plugin: "devtools" }).catch((e) => notify(e.message, "error")) }
+      ? { label: "History and undo", icon: "history", run: () => openLink(pluginPageLink(t.target.plugin, "history")) }
       : null,
     t.target?.kind === "extension"
       ? { label: "Reload the extension", icon: "refresh", run: () => layr.tools.call("extension_reload", { plugin: t.target.plugin }, { plugin: "layr" })

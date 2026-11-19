@@ -15,7 +15,17 @@ import {
   relTime,
   ready,
 } from "./common.js";
-import { adoptThread, contextMenu, copyText, onPhone, openFolderOnPc, threadLink, threadTask } from "./ui.js";
+import {
+  adoptThread,
+  contextMenu,
+  copyText,
+  onPhone,
+  openFolderOnPc,
+  openLink,
+  pluginPageLink,
+  threadLink,
+  threadTask,
+} from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const MODES = [["projects", "folder", "Projects"], ["plugin", "box", "Plugins"], ["extension", "puzzle", "Extensions"]];
@@ -24,7 +34,6 @@ const state = {
   mode: MODES.some(([m]) => m === savedMode) ? savedMode : "projects",
   targets: [],
   targetsError: null,
-  devtools: false,
   projects: [],
   threads: new Map(),
   models: [],
@@ -206,8 +215,8 @@ function projectGroup({ p, threads }) {
 // ------------------------------------------------------------------ plugins and extensions
 
 const PLACE = {
-  made: ["yours", "Made by you: its own repository, with History and Undo in My plugins"],
-  changed: ["your copy", "A store plugin with your changes (branch mine): History and Undo in My plugins"],
+  made: ["yours", "Made by you: its own repository, with History and Undo on its page"],
+  changed: ["your copy", "A store plugin with your changes (branch mine): History and Undo on its page"],
   store: ["store", "As it came from the store: Claude works on your own copy"],
   inside: ["in a repo", "Linked from a bigger repository: commits go there"],
 };
@@ -286,12 +295,12 @@ function targetGroup({ t, threads }) {
     });
     acts.push(add);
   }
-  if (state.devtools && !t.missing && (t.place === "made" || t.place === "changed")) {
-    const hist = h("button", { class: "btn ghost small icon-only", title: "History, undo and sharing (My plugins)" },
+  if (!t.missing && t.linked !== false && (t.place === "made" || t.place === "changed")) {
+    const hist = h("button", { class: "btn ghost small icon-only", title: "History, undo and sharing (its page)" },
       icon("history", 13));
     hist.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      layr.panels.open("main", { plugin: t.id }, { plugin: "devtools" }).catch?.((e) => notify(e.message, "error"));
+      void openLink(pluginPageLink(t.id, "history"));
     });
     acts.push(hist);
   }
@@ -743,7 +752,7 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
     // New ones: files without asking (commands still ask), as the plugin maker did; existing ones: as threads do.
     fillSelect(mode, permissionOptions(), isNew ? "acceptEdits" : (mode.dataset.touched ? mode.value : "default"));
     note.textContent = isNew
-      ? `A new folder in ~/layr-plugins, its own git repository: every turn is saved as a version you can undo${state.devtools ? " (My plugins › History)" : ""}.`
+      ? `A new folder in ~/layr-plugins, its own git repository: every turn is saved as a version you can undo (its page › History).`
       : t?.place === "store"
         ? `Claude works on your own copy of ${t.name}; layr runs your copy from then on, and store updates are merged into it.`
         : t ? `${PLACE[t.place]?.[1] ?? ""}. Folder: ${t.path}` : "";
@@ -814,8 +823,6 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
 
 renderModes();
 await Promise.all([loadProjects(), loadTargets(), loadThreads().catch((e) => notify(`Claude: ${e.message}`, "error"))]);
-// My plugins (devtools) shows a plugin's history; its button is offered only when it is installed.
-state.devtools = await layr.commands.list().then((cs) => cs.some((c) => c.id === "devtools.open"), () => false);
 render();
 void loadModels().then(() => document.dispatchEvent(new Event("claude-models")));
 void loadUsage(false);

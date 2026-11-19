@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { autoCommit, commitMessage, initPluginRepo, lastPrompt } from "../backend/autoCommit.js";
+import { autoCommit, commitMessage, initPluginRepo, lastPrompt, trailerLines } from "../backend/autoCommit.js";
 
 let failures = 0;
 function check(ok, what, detail) {
@@ -37,6 +37,16 @@ check(git(plugin, "log", "-1", "--format=%s|%an <%ae>") === "Please make a count
 check(git(plugin, "log", "-1", "--format=%b") === "I made a counter.", "body is the reply");
 check(git(plugin, "status", "--porcelain") === "", "nothing left over");
 check((await autoCommit(plugin, { prompt: "again" })) === null, "no changes: no commit");
+
+// 0.3.14: the thread and the turn go into the message as git trailers, and the answer has the short sha.
+writeFileSync(path.join(plugin, "panels", "main.html"), "<p>hi there</p>\n");
+const traced = await autoCommit(plugin, { prompt: "Say hi there", reply: "Done.", thread: "t_abc123", turn: 3 });
+check(traced?.short === traced?.commit?.slice(0, 7), "short sha", traced);
+const trailers = git(plugin, "log", "-1",
+  "--format=%(trailers:key=Layr-Thread,valueonly)|%(trailers:key=Layr-Turn,valueonly)");
+check(trailers.replace(/\s+/g, "") === "t_abc123|3", "Layr-Thread and Layr-Turn trailers", trailers);
+check(git(plugin, "log", "-1", "--format=%s") === "Say hi there", "subject unchanged by the trailers");
+check(trailerLines({}) === "" && trailerLines({ thread: "t_x" }) === "Layr-Thread: t_x", "no thread: no trailers");
 
 // A repository that only holds plugins inside it (a monorepo): never committed by itself.
 const mono = path.join(tmp, "mono");

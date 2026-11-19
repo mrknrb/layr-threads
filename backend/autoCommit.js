@@ -1,8 +1,10 @@
 // Commits by themselves (docs/ARCHITECTURE.md > The store > Commits by themselves): after a Claude turn that ended
 // well in a plugin's own repository (its git top level has a layr.json: plugin maker folders, an installed plugin's
 // `mine` or `merge` worktree, linked plugins that are their own repositories), everything the turn changed is
-// committed as "layr (Claude)". The user gets History and Undo in My plugins without knowing git. Projects that only
-// hold plugins inside a bigger repository are never committed by themselves.
+// committed as "layr (Claude)". The user gets History and Undo on the plugin's page without knowing git. Projects that
+// only hold plugins inside a bigger repository are never committed by themselves. 0.3.14: the message ends with the
+// trailers `Layr-Thread: <thread id>` and `Layr-Turn: <n>` (the turn's number in its thread, 1-based), so the plugin
+// page's History links each commit to the thread and turn that made it.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { git } from "./git.js";
@@ -33,6 +35,14 @@ export function commitMessage(prompt, reply) {
   return { subject, body };
 }
 
+/** The trailer lines naming the thread and turn that made a commit ("" without a thread). */
+export function trailerLines({ thread, turn } = {}) {
+  if (!thread) return "";
+  const lines = [`Layr-Thread: ${thread}`];
+  if (Number.isInteger(turn) && turn > 0) lines.push(`Layr-Turn: ${turn}`);
+  return lines.join("\n");
+}
+
 /** The text of the last user message in a transcript (the turn's prompt). */
 export function lastPrompt(entries) {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -44,9 +54,10 @@ export function lastPrompt(entries) {
 
 /**
  * Commit everything in `dir`'s repository when it is a plugin's own repository with changes and no unresolved
- * conflicts. Gives `{commit, subject, files, top}`, `{skipped, files}` (conflicts left), or null (nothing to do).
+ * conflicts. Gives `{commit, short, subject, files, top}`, `{skipped, files}` (conflicts left), or null (nothing to
+ * do). `thread` and `turn` go into the message as trailers.
  */
-export async function autoCommit(dir, { prompt, reply, author = CLAUDE_AUTHOR } = {}) {
+export async function autoCommit(dir, { prompt, reply, author = CLAUDE_AUTHOR, thread, turn } = {}) {
   let top;
   try {
     top = (await git(dir, ["rev-parse", "--show-toplevel"])).trim();
@@ -74,9 +85,11 @@ export async function autoCommit(dir, { prompt, reply, author = CLAUDE_AUTHOR } 
   const { subject, body } = commitMessage(prompt, reply);
   const args = [...identityArgs(author), "commit", "-q", "--no-verify", "-m", subject];
   if (body) args.push("-m", body);
+  const trailers = trailerLines({ thread, turn });
+  if (trailers) args.push("-m", trailers);
   await git(top, args);
   const commit = (await git(top, ["rev-parse", "HEAD"])).trim();
-  return { commit, subject, files: status ? status.split(/\r?\n/).length : 0, top };
+  return { commit, short: commit.slice(0, 7), subject, files: status ? status.split(/\r?\n/).length : 0, top };
 }
 
 /**

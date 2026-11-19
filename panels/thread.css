@@ -115,6 +115,11 @@ details.tool.needs-you { border-color: var(--warn);
 /* Lines */
 .sys { align-self: center; font-size: 11.5px; color: var(--fg-dim); text-align: center; max-width: 90%; }
 .sys.warn { color: var(--warn); }
+.commit-chip { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; padding: 0 6px; height: 17px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--bg-2); color: var(--fg-dim);
+  font: 11px var(--mono, ui-monospace, monospace); vertical-align: middle; }
+button.commit-chip { cursor: pointer; }
+button.commit-chip:hover { background: var(--bg-3); color: var(--fg); }
 .turn-end { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--fg-dim); padding: 0 2px; }
 .turn-end .icon { width: 13px; height: 13px; }
 .turn-end.done .icon { color: var(--ok); }

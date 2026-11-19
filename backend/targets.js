@@ -107,9 +107,10 @@ export async function resolveTarget(hub, target) {
     let folder = t.path;
     let place = t.place;
     if (place === "store") {
+      // Your copy (branch `mine`); an owned plugin with a repository is edited in a clone of it instead (0.3.14).
       const r = await hub.call("layr__plugin_edit", { plugin: t.id });
-      folder = r.path;
-      place = "changed";
+      folder = r?.path ?? folder;
+      place = !r?.branch || r.branch === "mine" ? "changed" : "made";
     }
     if (!folder || !existsSync(folder)) throw new Error(`The folder of ${t.name} is gone: ${folder}`);
     return { kind: t.extension ? "extension" : kind, id: t.id, name: t.name, folder, place, isNew: false, extension: t.extension };
@@ -225,8 +226,8 @@ The plugin's id is "${id}" (keep it in layr.json unless the user asks for anothe
     : `You are changing ${what}: "${name}" (id "${id}"). Read its layr.json and files first. Keep what works; talk in
 plain words; ask only about what the person wants, not how to build it.`;
   const placeNote = {
-    made: "The folder is the plugin's own git repository: layr saves your changes as a version by itself after each turn (the person sees them in My plugins > History and can undo any of them), so don't commit yourself.",
-    changed: "This is the person's own copy of a plugin from the store (git branch `mine`): layr runs it from this folder and saves your changes as a version after each turn (My plugins > History, with undo), so don't commit yourself. Store updates are merged into it later: keep changes focused, and keep the id.",
+    made: "The folder is the plugin's own git repository: layr saves your changes as a version by itself after each turn (the person sees them in History on the plugin's page in layr and can undo any of them), so don't commit yourself.",
+    changed: "This is the person's own copy of a plugin from the store (git branch `mine`): layr runs it from this folder and saves your changes as a version after each turn (History on the plugin's page in layr, with undo), so don't commit yourself. Store updates are merged into it later: keep changes focused, and keep the id.",
     inside: "This plugin lives inside a bigger git repository: layr doesn't save versions here by itself. Commit only if the person asks, as that repository's own instructions (CLAUDE.md) say.",
   }[place] ?? "";
   const pageUrl = hubUrl ? `${new URL("/_layr/layr-page.js", hubUrl)}` : "the core's /_layr/layr-page.js";

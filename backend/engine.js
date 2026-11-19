@@ -587,11 +587,16 @@ export class Engine {
     };
   }
 
-  list({ project, limit = 50, archived = false, query: text } = {}) {
+  /** `plugin` (0.3.14): only threads on that plugin; `pluginOf(meta)` says a thread's plugin (default: its target). */
+  list({ project, plugin, pluginOf, limit = 50, archived = false, query: text } = {}) {
     const p = project ? this.store.findProject(project) : null;
     if (project && !p) throw new Error(`No project ${project}`);
     let threads = Object.values(this.store.threads);
     if (p) threads = threads.filter((t) => t.projectId === p.id);
+    if (plugin) {
+      const of = pluginOf ?? ((t) => (t.kind === "plugin" ? (t.extra?.pluginId ?? null) : null));
+      threads = threads.filter((t) => of(t) === plugin);
+    }
     if (archived !== "all") threads = threads.filter((t) => Boolean(t.archived) === Boolean(archived));
     if (text) {
       const needle = String(text).toLowerCase();

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Account } from "../backend/account.js";
-import { contextFill, contextWindowFor, reportedWindow } from "../backend/engine.js";
+import { contextFill, contextWindowFor, Engine, reportedWindow } from "../backend/engine.js";
 import { baseRef, parseNumstat, threadChanges, fileDiff } from "../backend/changes.js";
 import { checkFresh, scriptFor, shellOf, terminalEnv } from "../backend/terminal.js";
 import {
@@ -381,4 +381,21 @@ test("restoreWorktree and restoreWorkspace: a removed worktree comes back in its
   assert.equal(git(folder, "rev-parse", "HEAD").trim(), own);
   assert.ok(store.thread("t_r").workspace.restoredAt);
   assert.equal(await engine.restoreWorkspace(store.thread("t_r")), null, "nothing missing: nothing to do");
+});
+
+test("thread_list: the plugin filter (0.3.14)", () => {
+  const thread = (id, extra) =>
+    ({ id, title: id, status: "done", queue: [], archived: false, lastActivity: id, ...extra });
+  const threads = {
+    a: thread("a", { kind: "plugin", extra: { pluginId: "wiki", place: "changed" } }),
+    b: thread("b", { kind: "plugin", extra: { pluginId: "notes" } }),
+    c: thread("c", { kind: "project", cwd: "/home/x/packages/wiki/merge" }),
+    d: thread("d", { kind: "project", cwd: "/work/wiki" }),
+  };
+  const store = { threads, findProject: () => null, append: (id, e) => e, updateThread() {}, saveIndexNow() {} };
+  const engine = new Engine({ store, hub: {}, account: {} });
+  assert.deepEqual(engine.list({ plugin: "wiki" }).map((t) => t.id), ["a"]);
+  const pluginOf = (t) => t.extra?.pluginId ?? /[\/]packages[\/]([^\/]+)[\/]merge$/.exec(t.cwd ?? "")?.[1] ?? null;
+  assert.deepEqual(engine.list({ plugin: "wiki", pluginOf }).map((t) => t.id).sort(), ["a", "c"]);
+  assert.equal(engine.list({}).length, 4);
 });

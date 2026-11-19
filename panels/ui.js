@@ -84,6 +84,10 @@ export async function openLink(url) {
 
 export const threadLink = (id) => `layr://claude/thread/${id}`;
 
+/** A plugin's page in layr (0.3.14: the Plugins list and plugin pages are layr's own): a tab, a commit in History. */
+export const pluginPageLink = (plugin, tab, commit) =>
+  `layr://layr/plugin/${encodeURIComponent(plugin)}${tab ? `/${tab}` : ""}${tab && commit ? `/${commit}` : ""}`;
+
 export async function copyText(text, what = "Copied") {
   try {
     await navigator.clipboard.writeText(text);

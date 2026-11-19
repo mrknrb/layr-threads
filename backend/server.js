@@ -79,14 +79,36 @@ async function commitTurn(meta) {
   if (process.env.LAYR_CLAUDE_AUTOCOMMIT === "0" || !meta.cwd) return;
   try {
     const prompt = lastPrompt(store.readTranscript(meta.id));
-    const done = await autoCommit(meta.cwd, { prompt, reply: engine.lastReply(meta.id) });
+    // The turn's number in its thread (1-based: the `turn` of its turn_start and turn_end entries).
+    const turn = Number.isInteger(meta.turns) && meta.turns > 0 ? meta.turns : undefined;
+    const done = await autoCommit(meta.cwd, { prompt, reply: engine.lastReply(meta.id), thread: meta.id, turn });
     if (!done?.commit) return;
     log(`saved ${done.files} file(s) in ${done.top}: ${done.subject}`);
-    const entry = store.append(meta.id, { type: "system", text: `Saved as a version (My plugins > History): ${done.subject}` });
+    // 0.3.14: the commit, so the thread panel links it to the plugin page's History.
+    const entry = store.append(meta.id, {
+      type: "system",
+      subtype: "saved",
+      text: `Saved as a version: ${done.subject}`,
+      commit: done.commit,
+      short: done.short,
+      turn: turn ?? null,
+      plugin: threadPlugin(meta) ?? pluginOfFolder(done.top),
+    });
     hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
   } catch (error) {
     log(`saving the changes in ${meta.cwd} failed:`, errorMessage(error));
   }
+}
+
+/** The installed plugin a thread works on (thread_start's target), or null. */
+function threadPlugin(meta) {
+  return meta.kind === "plugin" ? (meta.extra?.pluginId ?? null) : null;
+}
+
+/** An installed plugin's own folder in layr's home (`packages/<id>/mine` or `packages/<id>/merge`, as Plugin care's
+ * update threads use): its id; else null. */
+function pluginOfFolder(dir) {
+  return /[\\/]packages[\\/]([^\\/]+)[\\/](?:mine|merge)[\\/]?$/i.exec(String(dir ?? ""))?.[1] ?? null;
 }
 
 function linkPluginFolder(meta) {
@@ -108,7 +130,7 @@ function linkPluginFolder(meta) {
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.3.2" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.3.14" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -338,11 +360,15 @@ tool(
   "Threads, latest activity first, with status: running, waiting (for an approval or answer), done, failed, interrupted.",
   {
     project: z.string().optional(),
+    plugin: z
+      .string()
+      .optional()
+      .describe("Only threads on this installed plugin (its id): thread_start's target, or its folder in layr's home"),
     limit: z.number().int().min(1).max(500).optional(),
     archived: z.union([z.boolean(), z.literal("all")]).optional(),
     query: z.string().optional().describe("Words in the title, last message or branch"),
   },
-  (a) => ({ threads: engine.list(a) }),
+  (a) => ({ threads: engine.list({ ...a, pluginOf: (t) => threadPlugin(t) ?? pluginOfFolder(t.cwd) }) }),
 );
 
 tool(
