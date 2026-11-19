@@ -392,3 +392,36 @@ body.proto-resizing iframe {
 #task .toggle-pill.on .knob::after { transform: translateX(10px); background: #fff; }
 #task .toggle-pill:disabled { opacity: 0.55; cursor: default; }
 #away.on { background: color-mix(in srgb, #8fa8ff 22%, transparent); border-color: #8fa8ff; }
+
+/* Subagents (0.3.9): their list above the composer, the bar of a subagent's view, what the main agent told one,
+   your message to one in the main conversation. */
+#subview { max-width: 860px; margin: 0 auto; padding: 18px 18px 6px; display: flex; flex-direction: column; gap: 10px; }
+#subbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg)); font-size: 12.5px; min-width: 0; }
+#subbar .sub-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#subagents { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-2); font-size: 12.5px; }
+#subagents summary { list-style: none; cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: center;
+  color: var(--fg-dim); }
+#subagents summary .hint { margin-left: auto; font-size: 11.5px; }
+#subagents .sub-list { padding: 0 6px 6px; max-height: 180px; overflow: auto; display: flex; flex-direction: column; }
+#subagents .sub-item { display: flex; gap: 8px; align-items: center; border: 0; background: none; padding: 4px 6px;
+  border-radius: 6px; cursor: pointer; text-align: left; color: inherit; font: inherit; }
+#subagents .sub-item:hover, #subagents .sub-item.on { background: var(--bg-3); }
+#subagents .sub-item .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+#subagents .sub-item .k { color: var(--fg-dim); font-size: 11.5px; flex: none; }
+details.tool > summary .open-sub { flex: none; padding: 1px 8px; font-size: 11.5px; }
+.msg-user.from-claude { align-self: flex-start; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 14px 14px 14px 4px; white-space: normal; max-width: 100%; }
+.msg-user.from-claude .from { font-size: 10.5px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.06em;
+  display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
+.msg-user.from-claude.long .md-wrap { max-height: 220px; overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.msg-user.from-claude .more-btn { margin-top: 4px; }
+.user-wrap.from-claude-wrap { align-self: flex-start; align-items: flex-start; max-width: 92%; }
+.relay-wrap { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.relay-line { display: flex; gap: 6px; align-items: center; max-width: 85%; min-width: 0; border: 1px dashed var(--border);
+  background: none; color: var(--fg-dim); border-radius: 12px; padding: 4px 10px; cursor: pointer; font: inherit;
+  font-size: 12.5px; }
+.relay-line:hover { border-color: var(--accent); }
+.relay-line .who { flex: none; color: var(--fg); }
+.relay-line .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

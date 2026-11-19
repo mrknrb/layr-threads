@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions, with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -59,7 +59,7 @@
         "events": ["claude:threads", "claude:usage"],
         "defaults": { "plugins": "allow" } },
       { "id": "conversations", "label": "Read what threads say",
-        "tools": ["thread_read", "thread_transcript", "attachment_read", "thread_diff"],
+        "tools": ["thread_read", "thread_transcript", "thread_subagent", "attachment_read", "thread_diff"],
         "events": ["claude:thread.*"],
         "defaults": { "plugin:pipeline": "allow" } },
       { "id": "ask", "label": "Ask Claude one-off questions (uses your plan)", "tools": ["ask"],

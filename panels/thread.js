@@ -22,7 +22,7 @@ import {
   tokens,
 } from "./common.js";
 import { createDraftStore } from "./drafts.js";
-import { foldTurn, groupRuns, isWork, tokensTitle } from "./folds.js";
+import { foldTurn, groupRuns, isWork, relayFold, tokensTitle } from "./folds.js";
 import { renderTaskStrip } from "./pipeline.js";
 import { prototypeEmbeds } from "./prototypes.js";
 import { markdown, setMarkdownHooks, toolIcon, toolInputView, toolLabel, toolSummary } from "./render.js";
@@ -46,6 +46,8 @@ const $ = (id) => document.getElementById(id);
 const log = $("log");
 const scroller = $("scroller");
 const input = $("input");
+const subview = $("subview");
+const PLACEHOLDER = input.placeholder;
 
 const state = {
   id: null,
@@ -75,6 +77,14 @@ const state = {
   changes: null,
   commands: null,
   phone: false,
+  /** Every entry of the main transcript loaded, in order: a subagent's view is drawn from them. */
+  entries: [],
+  /** Agent call id → the subagent it started: {toolUseId, description, type, prompt, parent, agent, result}. */
+  agents: new Map(),
+  /** The subagent shown instead of the main conversation (subagents' view), or null. */
+  sub: null,
+  /** The subagents' views to go back to (a subagent's own subagent opened from its view). */
+  subStack: [],
 };
 
 // ------------------------------------------------------------------ start
@@ -121,6 +131,7 @@ async function loadTranscript() {
     const r = await call("thread_transcript", { thread: state.id, limit: 1500 });
     log.replaceChildren();
     main.turns = [];
+    state.entries = [];
     state.more = r.more;
     state.pending = new Set(r.pending ?? []);
     if (r.more) log.append(loadMoreButton());
@@ -146,6 +157,7 @@ function loadMoreButton() {
     // Render the older entries into a holder of their own turns, then move them in front of what is shown.
     const older = { container: h("div"), turns: [] };
     for (const e of r.entries) addEntry(e, { into: older });
+    state.entries.unshift(...r.entries);
     btn.remove();
     log.prepend(...(r.more ? [btn] : []), ...older.container.childNodes);
     main.turns.unshift(...older.turns);
@@ -250,7 +262,7 @@ function groupEl(turn, items, label) {
 
 /** Lay a finished turn out again: folded (only what stays, behind one row) or open, runs of work grouped. */
 function arrange(turn) {
-  const fold = foldTurn(turn.items);
+  const fold = turn.relay ? relayFold(turn.items) : foldTurn(turn.items);
   if (!fold) {
     turn.foldRow?.remove();
     turn.foldRow = null;
@@ -275,19 +287,41 @@ function arrange(turn) {
 // ------------------------------------------------------------------ entries
 
 function addEntry(e, { into = main } = {}) {
+  noteAgent(e);
+  const el = drawEntry(e, into);
+  if (into === main) {
+    state.entries.push(e);
+    if (state.sub) subFollow(e);
+  }
+  return el;
+}
+
+function drawEntry(e, into) {
   if (into === main) state.lastSeq = Math.max(state.lastSeq, e.seq);
   const parentCard = e.parent ? state.tools.get(e.parent) : null;
   if (parentCard && !parentCard.hidden) return addChild(parentCard, e);
+  // What a subagent was told shows only in its own view.
+  if (e.parent && e.type === "user") return null;
   const kept = (el) => el && addItem(currentTurn(into), { kind: "kept", entry: e, el });
   switch (e.type) {
     case "created":
       return kept(h("div", { class: "sys" }, `Started in ${e.workspace?.kind === "worktree" ? `worktree ${e.workspace.branch}` : e.workspace?.path ?? ""}`));
     case "user":
+      if (e.relay) {
+        // Your message to a subagent: one line; the main agent's turn passing it on folds away (relayFold).
+        if (e.steer) return kept(relayLine(e));
+        newTurn(into, relayLine(e)).relay = true;
+        return null;
+      }
       if (e.steer) return kept(userBubble(e));
       return newTurn(into, userBubble(e));
-    case "turn_start":
+    case "turn_start": {
       state.turnStartedAt = Date.parse(e.ts);
+      // A turn after one that passed a message on (the subagent's answer came back): not folded with it.
+      const last = into.turns.at(-1);
+      if (last?.relay && last.ended) newTurn(into, null);
       return null;
+    }
     case "text": {
       const el = replyHolder(e);
       const liveBlock = state.live.get(e.id);
@@ -404,6 +438,245 @@ function addChild(card, e) {
   }
 }
 
+// ------------------------------------------------------------------ subagents
+
+/** The subagent id an Agent call's result names ("agentId: a7a4…"), for threads from before layr kept their ids. */
+const agentIdIn = (text) => /agentId:\s*([0-9a-f]{8,})/i.exec(String(text ?? ""))?.[1] ?? null;
+
+/** Learn the subagents from the entries: their Agent calls, the ids their messages carry, their results. */
+function noteAgent(e) {
+  if (e.type === "tool_use" && (e.name === "Agent" || e.name === "Task")) {
+    if (state.agents.has(e.id)) return;
+    state.agents.set(e.id, {
+      toolUseId: e.id,
+      description: String(e.input?.description ?? ""),
+      type: e.input?.subagent_type ?? null,
+      prompt: String(e.input?.prompt ?? ""),
+      parent: e.parent ?? null,
+      agent: null,
+      result: null,
+    });
+    if (state.loaded) renderSubagents();
+  } else if (e.parent && e.agent) {
+    const a = state.agents.get(e.parent);
+    if (a && !a.agent) a.agent = e.agent;
+  } else if (e.type === "tool_result" && state.agents.has(e.id)) {
+    const a = state.agents.get(e.id);
+    a.result = e.content ?? "";
+    a.agent ??= agentIdIn(a.result);
+  }
+}
+
+/** A subagent's id and state: running, done, failed or stopped. */
+function agentInfo(a) {
+  const known = (state.thread?.subagents ?? []).find((s) => s.toolUseId === a.toolUseId || (a.agent && s.id === a.agent));
+  const id = a.agent ?? known?.id ?? agentIdIn(a.result);
+  const status = known?.status ?? (a.result != null ? "done" : busy(state.thread) ? "running" : "stopped");
+  return { id, status };
+}
+
+const SUB_STATUS = { running: "working", done: "finished", failed: "failed", stopped: "stopped" };
+const SUB_DOT = { running: "running", done: "done", failed: "failed", stopped: "interrupted" };
+
+/** The id of the subagent shown, or null. */
+function subId() {
+  const a = state.sub && state.agents.get(state.sub.toolUseId);
+  return a ? agentInfo(a).id : null;
+}
+
+/** Run `fn` on the subagent's view: its own tool cards and approvals (the main view keeps its own). */
+function inSub(fn) {
+  const tools = state.tools;
+  const approvals = state.approvals;
+  state.tools = state.sub.tools;
+  state.approvals = state.sub.approvals;
+  try {
+    return fn();
+  } finally {
+    state.tools = tools;
+    state.approvals = approvals;
+  }
+}
+
+/**
+ * Show a subagent's conversation instead of the main one: from the thread's entries, or (one from before layr kept
+ * subagents' text) from Claude Code's own transcript of it. The composer then writes to it.
+ */
+async function openSub(toolUseId, { push = true } = {}) {
+  const a = state.agents.get(toolUseId);
+  if (!a) return;
+  if (push && state.sub && state.sub.toolUseId !== toolUseId) state.subStack.push(state.sub.toolUseId);
+  if (!state.sub) state.mainScroll = scroller.scrollTop;
+  const sub = { toolUseId, tools: new Map(), approvals: new Map(), card: { children: subview }, texts: new Set(),
+    loading: false, pending: [] };
+  state.sub = sub;
+  subview.replaceChildren();
+  log.hidden = true;
+  subview.hidden = false;
+  renderSubbar();
+  renderComposerMode();
+  // Its conversation is complete in the thread when what it was told is there (layr 0.3.9 on); else from disk.
+  const told = state.entries.some((e) => e.type === "user" && e.by === "claude" && e.parent === toolUseId);
+  const id = agentInfo(a).id;
+  if (!told && id) {
+    sub.loading = true;
+    subview.append(h("div", { class: "empty" }, "Loading the subagent's conversation…"));
+    const disk = await call("thread_subagent", { thread: state.id, agent: id }).then((r) => r.entries ?? [], () => []);
+    if (state.sub !== sub) return;
+    subview.replaceChildren();
+    sub.loading = false;
+    if (disk.length) {
+      // What you wrote to it, passed on word for word, is yours.
+      const yours = new Set(state.entries.filter((e) => e.relay?.toolUseId === toolUseId).map((e) => e.text.trim()));
+      inSub(() => {
+        for (const e of disk) subAdd(e.type === "user" && yours.has(e.text.trim()) ? { ...e, you: true } : e);
+      });
+      for (const e of sub.pending.splice(0)) subFollow(e);
+      scrollToBottom(true);
+      return;
+    }
+  }
+  sub.pending = [];
+  if (!told) inSub(() => subAdd({ type: "user", id: `${toolUseId}:task`, by: "claude", text: a.prompt, parent: toolUseId }));
+  for (const e of state.entries) subFollow(e);
+  scrollToBottom(true);
+}
+
+/** Back to the subagent this one was opened from, or to the main conversation. */
+function closeSub({ all = false } = {}) {
+  const back = all ? null : state.subStack.pop();
+  if (all) state.subStack = [];
+  if (back) return void openSub(back, { push: false });
+  state.sub = null;
+  subview.replaceChildren();
+  subview.hidden = true;
+  log.hidden = false;
+  renderSubbar();
+  renderComposerMode();
+  if (state.mainScroll != null) scroller.scrollTop = state.mainScroll;
+}
+
+/** A new entry of the thread, drawn in the subagent's view too when it is the subagent's. */
+function subFollow(e) {
+  if (state.sub.loading) return void state.sub.pending.push(e);
+  inSub(() => subAdd(e));
+}
+
+/** Draw `e` in the subagent's view when it belongs to it (call in inSub). */
+function subAdd(e) {
+  const sub = state.sub;
+  const put = (el) => (subview.append(el), el);
+  if (e.relay) {
+    if (e.relay.toolUseId !== sub.toolUseId) return null;
+    sub.texts.add(String(e.text ?? "").trim());
+    return put(userBubble(e));
+  }
+  if (e.type === "approval_answer") return state.approvals.has(e.requestId) ? renderApproval(e.requestId) : null;
+  if (e.type === "approval") return e.toolUseId && state.tools.has(e.toolUseId) ? addApproval(e, put) : null;
+  // The main agent writing to it by itself (SendMessage): what it said, unless it was yours passed on.
+  if (e.type === "tool_use" && e.name === "SendMessage" && !e.parent && typeof e.input?.message === "string") {
+    const id = subId();
+    const to = e.input.to ?? e.input.recipient;
+    if (!id || to !== id || sub.texts.has(e.input.message.trim())) return null;
+    sub.texts.add(e.input.message.trim());
+    return put(fromClaude({ ...e, text: e.input.message }));
+  }
+  if (!e.parent) return null;
+  if (e.parent === sub.toolUseId) {
+    if (e.type !== "user") return addChild(sub.card, e);
+    if (e.you) return put(userBubble(e));
+    const text = String(e.text ?? "").trim();
+    if (!text || sub.texts.has(text)) return null;
+    sub.texts.add(text);
+    return put(fromClaude(e));
+  }
+  // Its own subagents' work goes in their cards, as in the main view.
+  const card = state.tools.get(e.parent);
+  return card && !card.hidden ? addChild(card, e) : null;
+}
+
+/** What the main agent told a subagent (its task, a message): long ones fold. */
+function fromClaude(e) {
+  const text = String(e.text ?? "");
+  const body = h("div", { class: "md-wrap" }, markdown(text));
+  const el = h("div", { class: `msg-user from-claude${text.length > 600 ? " long" : ""}` },
+    h("div", { class: "from" }, icon("bot", 12), "From the main agent"), body);
+  if (text.length > 600) {
+    const more = h("button", { class: "btn ghost small more-btn" }, "Show all");
+    more.addEventListener("click", () => {
+      el.classList.toggle("long");
+      more.textContent = el.classList.contains("long") ? "Show all" : "Show less";
+    });
+    el.append(more);
+  }
+  return h("div", { class: "user-wrap from-claude-wrap" }, el, when(e.ts));
+}
+
+/** Your message to a subagent, in the main conversation: one line that opens the subagent. */
+function relayLine(e) {
+  const a = state.agents.get(e.relay.toolUseId);
+  const name = e.relay.description || a?.description || "a subagent";
+  const el = h("button", { class: "relay-line", title: "Open the subagent" }, icon("send", 12),
+    h("span", { class: "who" }, `To subagent “${name}”`), h("span", { class: "t" }, e.text),
+    e.images?.length ? h("span", { class: "muted" }, ` · ${e.images.length} image(s)`) : null);
+  el.addEventListener("click", () => void openSub(e.relay.toolUseId));
+  return h("div", { class: "relay-wrap" }, el, when(e.ts));
+}
+
+/** The bar above a subagent's view: back, what it is, its state. */
+function renderSubbar() {
+  const bar = $("subbar");
+  const a = state.sub && state.agents.get(state.sub.toolUseId);
+  if (!a) {
+    bar.hidden = true;
+    return bar.replaceChildren();
+  }
+  const { status } = agentInfo(a);
+  const backTo = state.subStack.length ? state.agents.get(state.subStack.at(-1)) : null;
+  const back = h("button", { class: "btn ghost small" }, "← ",
+    backTo ? `Back to “${backTo.description || "subagent"}”` : "Main thread");
+  back.addEventListener("click", () => closeSub());
+  const toMain = backTo ? h("button", { class: "btn ghost small" }, "Main thread") : null;
+  toMain?.addEventListener("click", () => closeSub({ all: true }));
+  bar.replaceChildren(...[back, toMain].filter(Boolean), h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }),
+    h("span", { class: "sub-title", title: a.description }, a.description || "Subagent"),
+    ...(a.type ? [h("span", { class: "badge" }, a.type)] : []), h("span", { class: "muted" }, SUB_STATUS[status] ?? status));
+  bar.hidden = false;
+}
+
+/** The composer writes to the subagent shown, or to the main agent. */
+function renderComposerMode() {
+  input.placeholder = state.sub ? "Message this subagent…  (the main agent passes it on word for word)" : PLACEHOLDER;
+  renderPrefix();
+  renderWorking();
+}
+
+/** The thread's subagents, above the composer: each opens its conversation. */
+function renderSubagents() {
+  const el = $("subagents");
+  const list = [...state.agents.values()].filter((a) => !a.parent || !state.agents.has(a.parent));
+  if (!list.length) {
+    el.hidden = true;
+    return el.replaceChildren();
+  }
+  const infos = list.map((a) => ({ a, ...agentInfo(a) }));
+  const running = infos.filter((i) => i.status === "running").length;
+  const wasOpen = el.querySelector("details")?.open ?? false;
+  const rows = infos.slice().reverse().map(({ a, status }) => {
+    const row = h("button", { class: `sub-item${state.sub?.toolUseId === a.toolUseId ? " on" : ""}`, title: a.prompt },
+      h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }), h("span", { class: "t" }, a.description || "Subagent"),
+      h("span", { class: "k" }, [a.type, SUB_STATUS[status] ?? status].filter(Boolean).join(" · ")));
+    row.addEventListener("click", () => void openSub(a.toolUseId, { push: false }));
+    return row;
+  });
+  el.replaceChildren(h("details", { open: wasOpen },
+    h("summary", {}, icon("bot", 14), `${list.length} subagent${list.length > 1 ? "s" : ""}`,
+      running ? h("span", { class: "muted" }, `· ${running} working`) : null,
+      h("span", { class: "muted hint" }, "open one to see it and write to it")),
+    h("div", { class: "sub-list" }, rows)));
+  el.hidden = false;
+}
+
 /** "14:05", the full date on hover. */
 function when(iso) {
   if (!iso) return null;
@@ -504,7 +777,7 @@ function currentPrefix() {
 
 function renderPrefix() {
   const el = $("prefix");
-  const text = currentPrefix();
+  const text = state.sub ? "" : currentPrefix();
   el.hidden = !text;
   if (!text) return el.replaceChildren();
   const clear = h("button", { class: "btn ghost small icon-only", title: "Clear the picked answers" }, icon("x", 12));
@@ -561,9 +834,20 @@ function toolCard(e) {
   const chev = icon("chevron", 13);
   chev.classList.add("chev");
   const summary = toolSummary(e.name, e.input);
+  // A subagent's card opens its conversation, where you can write to it too.
+  let open = null;
+  if (e.name === "Agent" || e.name === "Task") {
+    open = h("button", { class: "btn ghost small open-sub", title: "Open this subagent's conversation; you can write to it there" },
+      "Open");
+    open.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void openSub(e.id);
+    });
+  }
   const el = h("details", { class: "tool" },
     h("summary", {}, chev, toolIcon(e.name), h("span", { class: "name" }, toolLabel(e.name)),
-      h("span", { class: "sum", title: summary }, summary), stateEl),
+      h("span", { class: "sum", title: summary }, summary), open, stateEl),
   );
   const body = h("div", { class: "body" });
   const children = h("div", { class: "children" });
@@ -650,6 +934,7 @@ function addApproval(e, put) {
 
 function refreshApprovals() {
   for (const id of state.approvals.keys()) renderApproval(id);
+  if (state.sub && state.approvals !== state.sub.approvals) inSub(refreshApprovals);
 }
 
 function renderApproval(requestId) {
@@ -832,6 +1117,8 @@ function setThread(t) {
   }
   if (prev && busy(prev) && !busy(t)) scheduleChanges();
   renderBackground(t.background ?? []);
+  renderSubagents();
+  renderSubbar();
   renderTodos(t.todos ?? []);
   renderQueue(t);
   renderPickers();
@@ -876,12 +1163,20 @@ function renderWorking() {
   $("away").hidden = state.task === undefined || Boolean(state.task?.toggles);
   $("away").classList.toggle("on", away);
   $("hint").textContent = waits ? "Waits for Away" : state.task ? "Sent through the pipeline" : isBusy ? "Enter queues · Ctrl+Enter steers" : "";
+  if (state.sub) {
+    const id = subId();
+    $("send").textContent = "Send to subagent";
+    $("steer").hidden = true;
+    $("away").hidden = true;
+    $("hint").textContent = id ? "The main agent passes it on" : "It can't take messages: its id isn't known";
+  }
   clearInterval(workingTimer);
   if (!isBusy) return;
   const tick = () => {
     const secs = state.turnStartedAt ? Math.round((Date.now() - state.turnStartedAt) / 1000) : null;
     $("working-text").textContent =
-      t.status === "waiting" ? "Waiting for your answer above" : `Working${secs != null ? ` · ${secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}` : "…"}`;
+      t.status === "waiting" ? `Waiting for your answer${state.sub ? "" : " above"}`
+        : `${state.sub ? "Main agent working" : "Working"}${secs != null ? ` · ${secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}` : "…"}`;
   };
   tick();
   workingTimer = setInterval(tick, 1000);
@@ -1261,7 +1556,8 @@ function autosize() {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.4)}px`;
   const t = state.thread;
-  $("steer").hidden = !(t && (t.status === "running" || t.status === "waiting")) || !input.value.trim() || Boolean(state.task);
+  $("steer").hidden = !(t && (t.status === "running" || t.status === "waiting")) || !input.value.trim() || Boolean(state.task) ||
+    Boolean(state.sub);
 }
 input.addEventListener("input", () => {
   autosize();
@@ -1315,7 +1611,10 @@ $("stop").addEventListener("click", async () => {
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
 async function send(mode, { away = false } = {}) {
   const typed = input.value;
-  const prefix = currentPrefix();
+  // In a subagent's view: to that subagent (the main agent passes it on), never through the pipeline.
+  const toSub = state.sub && !away ? subId() : null;
+  if (state.sub && !away && !toSub) return notify("This subagent can't take messages: its id isn't known", "error");
+  const prefix = toSub ? "" : currentPrefix();
   const text = prefix ? (typed.trim() ? `${prefix}\n\n${typed}` : prefix) : typed;
   if (!text.trim() && !state.attachments.length) return;
   const images = state.attachments.map(({ mediaType, data }) => ({ mediaType, data }));
@@ -1323,7 +1622,8 @@ async function send(mode, { away = false } = {}) {
   sendBtn.disabled = true;
   try {
     let r = null;
-    if (away) {
+    if (toSub) r = await call("thread_send", { thread: state.id, text, images, agent: toSub });
+    else if (away) {
       const number = state.task?.number ?? (await pipelineCall("act", { action: "adopt", threadId: state.id }))?.number;
       if (number == null) throw new Error("The thread couldn't become a pipeline task");
       await pipelineCall("send", { number, text, whenAway: true, ...(images.length ? { images } : {}) });
@@ -1339,7 +1639,7 @@ async function send(mode, { away = false } = {}) {
     else r = await call("thread_send", { thread: state.id, text, images, mode });
     input.value = "";
     state.attachments = [];
-    state.picks.picked = {};
+    if (!toSub) state.picks.picked = {};
     renderAttachments();
     renderLatest();
     renderSlash();

@@ -10,13 +10,14 @@
 //
 // Everything a panel needs goes two ways: appended to the thread's transcript (threads/<id>.jsonl), and emitted
 // as events on `claude:thread.<id>` through the hub. A panel opening later reads the transcript, then follows.
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { getSubagentMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
 import { CONFIG_RETRY_MS, configEmpty, isConfigBroken, repairEmptyConfig, restoreHint } from "./claudeConfig.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { createWorktree, currentBranch, isGitRepo } from "./git.js";
+import { findSubagent, relayPrompt, subagentEntries, userText } from "./subagents.js";
 import { threadSettings } from "./threadSettings.js";
 import {
   AsyncQueue,
@@ -307,9 +308,10 @@ export class Engine {
   }
 
   /** Send a message: a new turn when idle; while a turn runs, steer it ("steer") or wait for it to end ("queue"). */
-  async send(id, { text, images, mode = "queue" }) {
+  async send(id, { text, images, mode = "queue", agent }) {
     const meta = this.requireThread(id);
     if (!String(text ?? "").trim() && !images?.length) throw new Error("The message is empty");
+    if (agent) return this.sendToSubagent(meta, agent, { text, images });
     if (meta.archived) this.store.updateThread(id, { archived: false });
     const live = this.lives.get(id);
     const busy = live && live.turnActive;
@@ -335,6 +337,59 @@ export class Engine {
     return { sent: "turn", thread: this.summary(meta) };
   }
 
+  /**
+   * A message to one of the thread's subagents (its id): the main agent passes it on with SendMessage (subagents.js),
+   * in the running turn when there is one, else in a turn of its own. A subagent running in the foreground holds the
+   * main agent's turn, so it goes to the background first.
+   */
+  async sendToSubagent(meta, agentId, { text, images }) {
+    const id = meta.id;
+    const sub = findSubagent(meta, meta.subagents?.some((s) => s.id === agentId) ? [] : this.store.readTranscript(id), agentId);
+    if (!sub) throw new Error(`No subagent ${agentId} in this thread`);
+    if (meta.archived) this.store.updateThread(id, { archived: false });
+    const relay = { agent: sub.id, toolUseId: sub.toolUseId, description: sub.description ?? "" };
+    const saved = this.saveImages(meta, images);
+    const live = this.lives.get(id);
+    if (live && !live.closed && sub.status === "running" && !live.background.has(sub.id)) {
+      try {
+        await live.query.backgroundTasks?.(sub.toolUseId);
+      } catch (error) {
+        log(`moving subagent ${sub.id} of ${id} to the background:`, errorMessage(error));
+      }
+    }
+    if (live?.turnActive) {
+      const message = this.relayMessage(meta, relay, text, saved, "now");
+      this.store.append(id, { type: "user", text: String(text ?? ""), images: saved, relay, steer: true });
+      this.emitEntry(id, this.lastEntry);
+      live.input.push(message.sdk);
+      return { sent: "steer", thread: this.summary(meta) };
+    }
+    if (meta.status === "starting") {
+      const item = { id: newId("q"), text: String(text ?? ""), images: saved, at: nowIso(), relay };
+      this.store.updateThread(id, { queue: [...meta.queue, item] });
+      this.emitThread(meta);
+      return { sent: "queued", queued: item.id, position: meta.queue.length, thread: this.summary(meta) };
+    }
+    await this.dispatch(meta, { text, savedImages: saved, relay });
+    return { sent: "turn", thread: this.summary(meta) };
+  }
+
+  /**
+   * A subagent's conversation from Claude Code's own transcript of it, for one from before layr kept subagents'
+   * text: {agent, entries} (entries as in the thread's transcript, under its Agent call), empty when it is gone.
+   */
+  async subagentTranscript(id, agentId) {
+    const meta = this.requireThread(id);
+    const sub = findSubagent(meta, this.store.readTranscript(id), agentId);
+    if (!sub) throw new Error(`No subagent ${agentId} in this thread`);
+    const sessions = [...new Set([meta.sessionId, ...(meta.earlierSessions ?? [])].filter(Boolean))];
+    for (const session of sessions) {
+      const messages = await getSubagentMessages(session, sub.id, { dir: meta.cwd }).catch(() => []);
+      if (messages.length) return { agent: sub, entries: subagentEntries(messages, sub.toolUseId, sub.id) };
+    }
+    return { agent: sub, entries: [] };
+  }
+
   /** Queued messages: remove one, send one now as a steer, or let a paused queue go on. */
   async queueAction(id, { action, item }) {
     const meta = this.requireThread(id);
@@ -349,12 +404,15 @@ export class Engine {
     if (action === "steer") {
       const live = this.lives.get(id);
       if (live?.turnActive) {
-        const message = this.userMessage(meta, { text: found.text, savedImages: found.images }, "now");
-        this.store.append(id, { type: "user", text: message.text, images: message.images, steer: true });
+        const message = found.relay
+          ? this.relayMessage(meta, found.relay, found.text, found.images, "now")
+          : this.userMessage(meta, { text: found.text, savedImages: found.images }, "now");
+        this.store.append(id, { type: "user", text: found.text, images: message.images, steer: true,
+          ...(found.relay ? { relay: found.relay } : {}) });
         this.emitEntry(id, this.lastEntry);
         live.input.push(message.sdk);
       } else {
-        await this.dispatch(meta, { text: found.text, savedImages: found.images });
+        await this.dispatch(meta, { text: found.text, savedImages: found.images, relay: found.relay });
       }
     }
     this.emitThread(meta);
@@ -505,9 +563,12 @@ export class Engine {
       error: meta.error,
       todos: meta.todos,
       background: meta.background ?? [],
+      // 0.3.9: the thread's subagents; one still "running" without a live query stopped with it.
+      subagents: (meta.subagents ?? []).map((s) => (s.status === "running" && !live ? { ...s, status: "stopped" } : s)),
       resuming: Boolean(meta.restartResume),
       retrying: meta.configRetry ? { tries: meta.configTries ?? 1, since: meta.configRetry.at } : null,
-      queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at })),
+      queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at,
+        ...(q.relay ? { relay: q.relay } : {}) })),
       queuePaused: meta.queuePaused,
       pendingApprovals: meta.pendingApprovals,
       archived: meta.archived,
@@ -565,9 +626,12 @@ export class Engine {
    * Start a turn now: open the query when needed and push the message. `auto`: not the user's ("restart": the
    * engine picks a cut-off turn up again); `fork`: a new query resumes into a fork of the session (resumeAfterRestart).
    */
-  async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false }) {
+  async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false, relay = null }) {
     this.cancelConfigRetry(meta.id);
-    const message = this.userMessage(meta, { text, images, savedImages });
+    // `relay`: the user's message to a subagent, which the main agent passes on (sendToSubagent).
+    const message = relay
+      ? this.relayMessage(meta, relay, text, savedImages ?? this.saveImages(meta, images))
+      : this.userMessage(meta, { text, images, savedImages });
     let live = this.lives.get(meta.id);
     if (live?.needsRestart && this.canClose(live)) {
       this.closeLive(meta.id, "restart for new settings");
@@ -575,7 +639,8 @@ export class Engine {
     }
     // `again`: the same message once more (after Claude Code couldn't start): it is in the transcript already.
     if (!again) {
-      this.store.append(meta.id, { type: "user", text: message.text, images: message.images, ...(auto ? { auto } : {}) });
+      this.store.append(meta.id, { type: "user", text: relay ? String(text ?? "") : message.text, images: message.images,
+        ...(auto ? { auto } : {}), ...(relay ? { relay } : {}) });
       this.emitEntry(meta.id, this.lastEntry);
     }
     if (!meta.title || meta.title === "New thread") this.store.updateThread(meta.id, { title: titleFromPrompt(text) });
@@ -591,7 +656,8 @@ export class Engine {
     if (meta.queuePaused || !meta.queue.length || meta.archived) return false;
     const [next, ...rest] = meta.queue;
     this.store.updateThread(meta.id, { queue: rest });
-    void this.dispatch(meta, { text: next.text, savedImages: next.images }).catch((error) => this.fail(meta, error));
+    void this.dispatch(meta, { text: next.text, savedImages: next.images, relay: next.relay })
+      .catch((error) => this.fail(meta, error));
     return true;
   }
 
@@ -644,6 +710,40 @@ export class Engine {
     this.emitThread(meta);
     this.onTurnEnded?.(meta, status);
     if (!this.dispatchNextQueued(meta)) this.scheduleIdleClose(meta.id);
+  }
+
+  /**
+   * A subagent started, or was resumed (by SendMessage: its Agent call stays the one that started it): kept in the
+   * thread's `subagents`, the latest 100.
+   */
+  subagentStarted(meta, msg) {
+    const list = meta.subagents ?? [];
+    const known = list.find((s) => s.id === msg.task_id);
+    const next = known
+      ? list.map((s) => (s === known ? { ...s, status: "running", endedAt: null } : s))
+      : [...list, {
+          id: msg.task_id,
+          toolUseId: msg.tool_use_id ?? null,
+          description: String(msg.description ?? ""),
+          type: msg.subagent_type ?? null,
+          ...(msg.parent_task_id ? { parentAgent: msg.parent_task_id } : {}),
+          status: "running",
+          startedAt: nowIso(),
+          endedAt: null,
+        }].slice(-100);
+    this.store.updateThread(meta.id, { subagents: next });
+    this.emitThread(meta);
+  }
+
+  /** A task ended: a subagent among them is completed, failed or stopped now. */
+  subagentEnded(meta, taskId, status) {
+    const list = meta.subagents ?? [];
+    if (!list.some((s) => s.id === taskId)) return;
+    const state = status === "completed" ? "done" : status === "failed" ? "failed" : "stopped";
+    this.store.updateThread(meta.id, {
+      subagents: list.map((s) => (s.id === taskId ? { ...s, status: state, endedAt: nowIso() } : s)),
+    });
+    this.emitThread(meta);
   }
 
   /** Close an idle query after a while; not while background work runs (it would die with the process). */
@@ -878,7 +978,9 @@ export class Engine {
   /** The thread's last message, as dispatch() takes it again: {text, images} or null. */
   lastUserInput(id) {
     const last = this.store.readTranscript(id).findLast((e) => e.type === "user");
-    return last ? { text: last.text ?? "", images: last.images ?? [] } : null;
+    if (!last) return null;
+    // A message to a subagent goes again as what the main agent got (the user's text in the relay instructions).
+    return { text: last.relay ? relayPrompt(last.relay, last.text ?? "") : last.text ?? "", images: last.images ?? [] };
   }
 
   /** Try again: the thread's last message sent once more, in the same session (a turn that failed or was stopped). */
@@ -967,6 +1069,8 @@ export class Engine {
       ...(meta.allowRules?.length ? { allowedTools: [...meta.allowRules] } : {}),
       additionalDirectories: [this.store.attachmentsDir(meta.id)],
       includePartialMessages: true,
+      // Subagents' whole conversations (text and thinking too), shown in their own view (0.3.9).
+      forwardSubagentText: true,
       canUseTool: (toolName, toolInput, opts) => this.canUseTool(meta, live, toolName, toolInput, opts),
       systemPrompt: {
         type: "preset",
@@ -1091,7 +1195,8 @@ export class Engine {
   historyPrompt(id) {
     const lines = [];
     for (const e of this.store.readTranscript(id)) {
-      if (e.type === "user") lines.push(`<user>\n${e.text}\n</user>`);
+      if (e.type === "user" && e.relay) lines.push(`<user to="subagent ${e.relay.description || e.relay.agent}">\n${e.text}\n</user>`);
+      else if (e.type === "user" && !e.parent) lines.push(`<user>\n${e.text}\n</user>`);
       else if (e.type === "text" && !e.parent) lines.push(`<assistant>\n${truncate(e.text, 4000)}\n</assistant>`);
     }
     const last = lines.pop() ?? "";
@@ -1134,6 +1239,7 @@ export class Engine {
 
   handleSystem(meta, live, msg) {
     if (msg.subtype === "task_notification" && msg.tool_use_id) this.buildTimes?.backgroundDone(msg.tool_use_id, msg.status);
+    if (msg.subtype === "task_notification") this.subagentEnded(meta, msg.task_id, msg.status);
     if (msg.subtype === "init") {
       live.sawInit = true;
       live.model = msg.model;
@@ -1171,6 +1277,8 @@ export class Engine {
         .catch(() => {});
     } else if (msg.subtype === "commands_changed") {
       this.setCommands(meta, msg.commands);
+    } else if (msg.subtype === "task_started" && (msg.subagent_type !== undefined || msg.task_type === "local_agent")) {
+      this.subagentStarted(meta, msg);
     } else if (msg.subtype === "background_tasks_changed") {
       this.setBackground(meta, live, msg.tasks);
     } else if (msg.subtype === "task_notification" && !msg.ambient && !msg.skip_transcript &&
@@ -1239,6 +1347,7 @@ export class Engine {
 
   handleAssistant(meta, live, msg) {
     const parent = msg.parent_tool_use_id ?? null;
+    const sub = parent ? { parent, ...(msg.agent_id ? { agent: msg.agent_id } : {}) } : {};
     if (!live.turnActive && !parent) this.beginTurn(meta, live);
     this.flushDeltas(meta.id);
     const m = msg.message ?? {};
@@ -1248,16 +1357,16 @@ export class Engine {
       if (block.type === "text") {
         if (!block.text) return;
         const key = parent ? fallback : this.claimStreamKey(live, m.id, "text", fallback);
-        this.addEntry(meta, { type: "text", id: key, text: block.text, ...(parent ? { parent } : {}) });
+        this.addEntry(meta, { type: "text", id: key, text: block.text, ...sub });
         if (!parent) this.touch(meta, { preview: preview(block.text) });
       } else if (block.type === "thinking") {
         const key = parent ? fallback : this.claimStreamKey(live, m.id, "thinking", fallback);
         if (!block.thinking) return;
-        this.addEntry(meta, { type: "thinking", id: key, text: block.thinking, ...(parent ? { parent } : {}) });
+        this.addEntry(meta, { type: "thinking", id: key, text: block.thinking, ...sub });
       } else if (block.type === "tool_use") {
         const inputText = JSON.stringify(block.input ?? {});
         const input = inputText.length > TOOL_INPUT_MAX ? { _truncated: truncate(inputText, TOOL_INPUT_MAX) } : block.input;
-        this.addEntry(meta, { type: "tool_use", id: block.id, name: block.name, input, ...(parent ? { parent } : {}) });
+        this.addEntry(meta, { type: "tool_use", id: block.id, name: block.name, input, ...sub });
         this.buildTimes?.toolStarted(meta, block);
         if (block.name === "TodoWrite" && Array.isArray(block.input?.todos) && !parent) {
           const todos = block.input.todos.map((t) => ({ content: t.content, status: t.status, activeForm: t.activeForm }));
@@ -1280,6 +1389,10 @@ export class Engine {
     if (msg.isReplay) return;
     const parent = msg.parent_tool_use_id ?? null;
     const content = msg.message?.content;
+    const sub = parent ? { parent, ...(msg.agent_id ? { agent: msg.agent_id } : {}) } : {};
+    // What a subagent is told (its task, a message passed on to it): shown in its view.
+    const told = parent ? userText(content) : "";
+    if (told) this.addEntry(meta, { type: "user", id: msg.uuid ?? newId("u"), text: truncate(told, TOOL_RESULT_MAX), by: "claude", ...sub });
     if (!Array.isArray(content)) return;
     for (const block of content) {
       if (block.type !== "tool_result") continue;
@@ -1299,7 +1412,7 @@ export class Engine {
         content: truncate(text, TOOL_RESULT_MAX),
         isError: block.is_error === true,
         ...(images ? { images } : {}),
-        ...(parent ? { parent } : {}),
+        ...sub,
       });
     }
   }
@@ -1360,6 +1473,7 @@ export class Engine {
       kind,
       tool: toolName,
       toolUseId: opts?.toolUseID ?? null,
+      ...(opts?.agentID ? { agent: opts.agentID } : {}),
       input: inputText.length > TOOL_INPUT_MAX ? { _truncated: truncate(inputText, TOOL_INPUT_MAX) } : toolInput,
       title: opts?.title ?? null,
       reason: opts?.decisionReason ?? null,
@@ -1463,11 +1577,25 @@ export class Engine {
     return saved;
   }
 
+  /** The SDK user message asking the main agent to pass the user's text (and where its images are) on to a subagent. */
+  relayMessage(meta, relay, text, saved, priority) {
+    const dir = this.store.attachmentsDir(meta.id);
+    const note = saved.length
+      ? `\n\n(Attached image${saved.length > 1 ? "s" : ""} saved at: ${saved.map((i) => path.join(dir, i.name)).join(", ")})`
+      : "";
+    return this.userMessage(meta, { text: relayPrompt(relay, String(text ?? "") + note), savedImages: saved, inline: false }, priority);
+  }
+
   /** The SDK user message for text and images (new ones as base64, or ones saved before). */
-  userMessage(meta, { text, images, savedImages }, priority) {
+  userMessage(meta, { text, images, savedImages, inline = true }, priority) {
     const saved = savedImages ?? this.saveImages(meta, images);
     const body = String(text ?? "");
     const content = [];
+    // `inline: false`: the text only (a message passed on to a subagent: relayMessage says where its images are).
+    if (!inline) {
+      const sdk = { type: "user", message: { role: "user", content: body }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
+      return { sdk, text: body, images: saved };
+    }
     for (const img of saved) {
       const data = this.store.readAttachment(meta.id, img.name).toString("base64");
       content.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data } });

@@ -30,6 +30,19 @@ export function foldTurn(items) {
   return { hidden, label: foldLabel(end.entry) };
 }
 
+/**
+ * A finished turn in which the main agent passed your message on to a subagent (0.3.9): everything it did folds away
+ * (its tool calls, its "Passed on."), and its end line when it ended well. Null before it ends or with nothing to fold.
+ */
+export function relayFold(items) {
+  const endIndex = items.findIndex((i) => i.kind === "end");
+  if (endIndex < 0) return null;
+  const hidden = new Set();
+  items.forEach((item, i) => (item.kind === "text" || isWork(item)) && hidden.add(i));
+  if (items[endIndex].entry?.status === "done") hidden.add(endIndex);
+  return hidden.size ? { hidden, label: "Passed on to the subagent" } : null;
+}
+
 /** "Worked for 3m 12s · 777k tokens in · 2.9k out", "You stopped it after 40s", "Failed after 1m 5s". */
 export function foldLabel(end) {
   const took = typeof end?.durationMs === "number" ? elapsed(end.durationMs) : null;

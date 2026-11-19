@@ -284,9 +284,24 @@ tool(
 tool(
   "thread_send",
   "Send a message to a thread. Idle: starts a turn. While a turn runs: mode queue (default) sends it after the turn, " +
-    "mode steer puts it into the running turn now.",
-  { thread: threadId, text: z.string(), mode: z.enum(["queue", "steer"]).optional(), images: images.optional() },
-  (a) => engine.send(a.thread, { text: a.text, images: a.images, mode: a.mode }),
+    "mode steer puts it into the running turn now. With agent: to that subagent of the thread (its id), which the " +
+    "thread's main agent passes on word for word (SendMessage), in the running turn or a turn of its own.",
+  {
+    thread: threadId,
+    text: z.string(),
+    mode: z.enum(["queue", "steer"]).optional(),
+    images: images.optional(),
+    agent: z.string().optional().describe("A subagent's id (thread_status subagents): the message goes to it"),
+  },
+  (a) => engine.send(a.thread, { text: a.text, images: a.images, mode: a.mode, agent: a.agent }),
+);
+
+tool(
+  "thread_subagent",
+  "A subagent's conversation as Claude Code keeps it (for panels: one from before layr kept subagents' text): " +
+    "{agent, entries}, entries as thread_transcript gives them, under the subagent's Agent call.",
+  { thread: threadId, agent: z.string().describe("The subagent's id") },
+  (a) => engine.subagentTranscript(a.thread, a.agent),
 );
 
 tool("thread_interrupt", "Stop the thread's running turn (the session stays; queued messages wait).", { thread: threadId }, (a) =>
@@ -581,7 +596,10 @@ function compact(entries) {
     if (e.parent) continue;
     if (e.type === "user" && e.auto === "restart") {
       out.push({ seq: e.seq, role: "system", text: "layr picked the turn up again after the Claude engine restarted" });
-    } else if (e.type === "user") out.push({ seq: e.seq, role: "user", text: e.text + (e.images?.length ? ` [${e.images.length} image(s)]` : "") });
+    } else if (e.type === "user") {
+      const to = e.relay ? `[to subagent ${e.relay.description || e.relay.agent}] ` : "";
+      out.push({ seq: e.seq, role: "user", text: to + e.text + (e.images?.length ? ` [${e.images.length} image(s)]` : "") });
+    }
     else if (e.type === "text") out.push({ seq: e.seq, role: "assistant", text: e.text });
     else if (e.type === "tool_use") {
       const m = { seq: e.seq, role: "tool", text: `${e.name} ${toolSummary(e.name, e.input)}`.trim() };
