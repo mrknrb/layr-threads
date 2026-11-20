@@ -707,7 +707,8 @@ const EXAMPLES = {
 /**
  * The form for a thread on a plugin or extension. `plugin`: an id, null for a new one, "" for the first installed one.
  * A store plugin gets your own copy first (the backend asks layr__plugin_edit); a new one gets its own folder and
- * repository in ~/layr-plugins, an extension from a small template that already talks to layr.
+ * repository (in layr's home: one folder for each plugin), an extension from a small template that already talks to
+ * layr.
  */
 function openTargetForm({ kind, plugin, prompt: text = "" }) {
   const form = $("new-form");
@@ -769,10 +770,11 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
     // New ones: files without asking (commands still ask), as the plugin maker did; existing ones: as threads do.
     fillSelect(mode, permissionOptions(), isNew ? "acceptEdits" : (mode.dataset.touched ? mode.value : "default"));
     note.textContent = isNew
-      ? `A new folder in ~/layr-plugins, its own git repository: every turn is saved as a version you can undo (its page › History).`
+      ? `The new ${word} gets its own folder in layr, with its own history: every turn is saved as a version you can undo (its page › History).`
       : t?.place === "store"
         ? `Claude works on your own copy of ${t.name}; layr runs your copy from then on, and store updates are merged into it.`
-        : t ? `${PLACE[t.place]?.[1] ?? ""}. Folder: ${t.path}` : "";
+        // Its folder only where it isn't layr's own for the plugin (a long path nobody needs to read).
+        : t ? `${PLACE[t.place]?.[1] ?? ""}${t.place === "inside" ? `. Folder: ${t.path}` : ""}` : "";
   }
   mode.addEventListener("change", () => (mode.dataset.touched = "1"));
   targetSel.addEventListener("change", update);

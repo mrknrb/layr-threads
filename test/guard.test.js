@@ -137,6 +137,8 @@ check(offOut?.hookSpecificOutput?.permissionDecision === "deny" && logged === `t
 check(layrPids({ pid: 5, ppid: 7 }).join() === "5,7", "layrPids: this engine and the core that started it");
 process.env.LAYR_HOME = "C:\\somewhere\\layr-dev";
 check(!("LAYR_HOME" in claudeEnv()), "threads don't get LAYR_HOME (the running app's home)");
+process.env.LAYR_PACKAGES = "C:\\somewhere\\layr-dev\\packages";
+check(!("LAYR_PACKAGES" in claudeEnv()), "nor LAYR_PACKAGES (where the running app makes plugins)");
 
 if (failures) {
   console.log(`${failures} failed`);

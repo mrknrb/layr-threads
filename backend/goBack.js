@@ -46,12 +46,15 @@ function isPrompt(e) {
   return typeof c === "string" || (Array.isArray(c) && !c.some((b) => b?.type === "tool_result"));
 }
 
-/** A prompt's text as layr sent it: the last text block, without the note about lost background tasks in front. */
+/** A prompt's text as layr sent it: the last text block, without the notes layr put in front of it (the plugin's
+ * folder moved, background tasks were lost). */
 export function promptText(content) {
   let text = "";
   if (typeof content === "string") text = content;
   else if (Array.isArray(content)) text = content.filter((b) => b?.type === "text").at(-1)?.text ?? "";
-  return text.replace(/^\[layr: these background tasks of yours[\s\S]*?\]\n\n/, "");
+  return text
+    .replace(/^\[layr: this plugin's folder moved[\s\S]*?\]\n\n/, "")
+    .replace(/^\[layr: these background tasks of yours[\s\S]*?\]\n\n/, "");
 }
 
 function hasImage(content) {

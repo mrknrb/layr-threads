@@ -15,12 +15,13 @@ import { fileDiff, threadChanges } from "./changes.js";
 import { Engine, PERMISSION_MODES } from "./engine.js";
 import { isGitRepo, listWorktrees, worktreeStatus } from "./git.js";
 import { Hub } from "./hub.js";
-import { linkIfReady, pluginsRoot } from "./pluginMaker.js";
+import { applyMoves } from "./moved.js";
+import { linkIfReady, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
 import { isPluginsRoot, listTargets, readManifest, resolveTarget, TARGET_KINDS, targetSystemPrompt } from "./targets.js";
 import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
-import { errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
+import { ensureDir, errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
 
 /** Slash commands every Claude Code session has, shown before it has listed its own. */
 const BUILTIN_COMMANDS = [
@@ -30,6 +31,13 @@ const BUILTIN_COMMANDS = [
 
 const dataDir = process.env.LAYR_DATA_DIR || path.join(os.homedir(), ".layr-claude-dev");
 const store = new Store(dataDir);
+// Plugin folders the core moved into its home (one folder for each plugin): their projects and threads follow, before
+// the engine picks anything up again.
+try {
+  applyMoves({ store });
+} catch (error) {
+  log("following the plugin folders layr moved failed:", errorMessage(error));
+}
 const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB_TOKEN });
 // Another Claude account signed in (the accounts plugin switched the live login): its limits, not the old one's.
 const account = new Account({
@@ -138,7 +146,7 @@ function linkPluginFolder(meta) {
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.5.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.6.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -591,9 +599,9 @@ tool(
 
 tool(
   "plugin_make",
-  "Make a layr plugin with AI from a plain-words description: starts a thread in a new folder under " +
-    "~/layr-plugins that writes it and links it into layr. Gives the thread and the folder. (thread_start with " +
-    "target {kind: plugin} does the same and more.)",
+  "Make a layr plugin with AI from a plain-words description: starts a thread in a new folder of the plugin's own " +
+    "(plugins_folder says where) that writes it and links it into layr. Gives the thread and the folder. " +
+    "(thread_start with target {kind: plugin} does the same and more.)",
   {
     description: z.string().describe("What the plugin should do, in plain words"),
     name: z.string().optional(),
@@ -615,7 +623,19 @@ tool(
   },
 );
 
-tool("plugins_folder", "Where new plugins made with AI go.", {}, () => ({ folder: pluginsRoot() }));
+tool(
+  "plugins_folder",
+  "Where new plugins made with AI go. On a layr with one folder for each plugin (`layout: 2`): `folder` is layr's " +
+    "packages folder and a plugin's own folder is `<folder>/<id>/mine` (`plugin`, with <id> to fill in); " +
+    "`oldFolder`: where they were before, and where unfinished ones may still be. On an older layr: {folder}, a " +
+    "plugin is `<folder>/<id>`.",
+  {},
+  () => {
+    const packages = packagesRoot();
+    if (!packages) return { folder: ensureDir(oldPluginsRoot()) };
+    return { folder: packages, layout: 2, plugin: path.join(packages, "<id>", "mine"), oldFolder: oldPluginsRoot() };
+  },
+);
 
 // ------------------------------------------------------------------ build times
 

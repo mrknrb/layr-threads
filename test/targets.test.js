@@ -1,9 +1,11 @@
 // Unit test of threads on plugins and extensions (backend/targets.js), without Claude or a core: the plugin list from
 // a stand-in hub, a store plugin gets your copy first, a new plugin and a new extension get their folder, template
-// and first commit, and the system prompt says what it should. Run: node test/targets.test.js
+// and first commit, and the system prompt says what it should. First as on an older core (every plugin made here in
+// one folder, `~/layr-plugins`), then as on a core with one folder for each plugin (LAYR_PACKAGES:
+// `<packages>/<id>/mine`). Run: node test/targets.test.js
 import { execFileSync } from "node:child_process";
 import http from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -16,9 +18,12 @@ const git = (dir, ...args) => execFileSync("git", ["-C", dir, ...args], { encodi
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "layr-targets-"));
 process.env.LAYR_CLAUDE_PLUGINS_DIR = path.join(tmp, "layr-plugins");
+// An older core: it doesn't say where its packages are (a thread of a newer layr running this test might).
+delete process.env.LAYR_PACKAGES;
 const { isPluginsRoot, listTargets, readManifest, resolveTarget, scaffoldExtension, targetSystemPrompt } = await import(
   "../backend/targets.js"
 );
+const { newPluginFolder, oldPluginsRoot, packagesRoot, pluginFolder } = await import("../backend/pluginMaker.js");
 
 // Installed plugins as the core's layr__plugin_repos gives them.
 const made = path.join(tmp, "made");
@@ -33,21 +38,18 @@ mkdirSync(inside, { recursive: true });
 writeFileSync(path.join(inside, "layr.json"), JSON.stringify({ id: "claude", name: "Claude Code" }));
 
 const calls = [];
+/** What layr__plugin_repos lists. */
+const repos = [
+  { id: "quiet", name: "Quiet", kind: "made", path: made, linked: true },
+  { id: "notes", name: "Notes", kind: "store", path: storeDir, linked: false },
+  { id: "claude", name: "Claude Code", kind: "made", path: inside, linked: true, insideRepo: path.join(tmp, "repo") },
+];
 const hub = {
   available: true,
   url: null, // no core to fetch layr-ext.js from: the repository's copy is used
   async call(name, args) {
     calls.push({ name, args });
-    if (name === "layr__plugin_repos") {
-      return {
-        git: true,
-        plugins: [
-          { id: "quiet", name: "Quiet", kind: "made", path: made, linked: true },
-          { id: "notes", name: "Notes", kind: "store", path: storeDir, linked: false },
-          { id: "claude", name: "Claude Code", kind: "made", path: inside, linked: true, insideRepo: path.join(tmp, "repo") },
-        ],
-      };
-    }
+    if (name === "layr__plugin_repos") return { git: true, plugins: repos };
     if (name === "layr__plugin_edit") {
       mkdirSync(mine, { recursive: true });
       return { path: mine, branch: "mine" };
@@ -76,9 +78,15 @@ await resolveTarget(hub, { kind: "plugin", plugin: "nope" }).catch((e) => (unkno
 check(/No plugin nope/.test(unknown ?? ""), "unknown plugin refused", unknown);
 
 // A new plugin: its own folder and repository with an empty first commit.
+check(packagesRoot() === null && pluginFolder("x") === path.join(oldPluginsRoot(), "x"),
+  "an older core: a plugin's folder is in the one folder for every plugin");
 const fresh = await resolveTarget(hub, { kind: "plugin", name: "Lab notebook" });
 check(fresh.isNew && fresh.id === "lab-notebook" && existsSync(path.join(fresh.folder, ".git")), "new plugin folder", fresh);
+check(fresh.folder === path.join(tmp, "layr-plugins", "lab-notebook"), "in the old folder for every plugin",
+  fresh.folder);
 check(git(fresh.folder, "log", "--format=%s") === "New plugin lab-notebook", "its first commit");
+const second = newPluginFolder({ name: "Lab notebook" });
+check(second.id === "lab-notebook-2", "a taken id gets a number", second.id);
 
 // A new extension: the template (layr.json with extension, MV3 manifest, a service worker, layr-ext.js), committed.
 const ext = await resolveTarget(hub, { kind: "extension", name: "Quiet YouTube", description: "Hide recommendations\nand more" });
@@ -120,7 +128,7 @@ check(pInside.includes("bigger git repository"), "inside a repository prompt");
 
 check(isPluginsRoot(process.env.LAYR_CLAUDE_PLUGINS_DIR) && !isPluginsRoot(tmp), "the plugins folder is known");
 
-// Folders made in ~/layr-plugins but not linked yet are targets too.
+// Folders made in the old folder for every plugin (~/layr-plugins) but not linked yet are targets too.
 const { targets: again } = await listTargets(hub);
 check(again.some((t) => t.id === "quiet-youtube" && t.extension && !t.linked), "unlinked new extension listed",
   again.map((t) => t.id));
@@ -148,6 +156,70 @@ for (const [what, hasPage] of [["a new core", true], ["an older core", false]]) 
     `${what}: layr-page.js ${expected ? "written" : "skipped"}`, r);
   if (hasPage) check(readFileSync(page, "utf8").includes("from the core"), `${what}: layr-page.js from the core`);
 }
+
+// ------------------------------------------------------------------ one folder for each plugin (LAYR_PACKAGES)
+
+const packages = path.join(tmp, "home", "packages");
+mkdirSync(packages, { recursive: true });
+process.env.LAYR_PACKAGES = packages;
+check(packagesRoot() === packages && pluginFolder("x") === path.join(packages, "x", "mine"),
+  "a plugin's folder is <packages>/<id>/mine");
+check(isPluginsRoot(process.env.LAYR_CLAUDE_PLUGINS_DIR) && !isPluginsRoot(packages),
+  "the old projects' folder for every plugin is still the old one");
+
+// A new plugin: `<packages>/<id>/mine`, a repository of its own (`.git` is a folder).
+const log = await resolveTarget(hub, { kind: "plugin", name: "Field log" });
+check(log.isNew && log.id === "field-log" && log.folder === path.join(packages, "field-log", "mine"),
+  "new plugin folder", log);
+check(statSync(path.join(log.folder, ".git")).isDirectory(), "its own repository");
+check(git(log.folder, "log", "--format=%s") === "New plugin field-log", "its first commit");
+check(!existsSync(path.join(tmp, "layr-plugins", "field-log")), "nothing new in the old folder");
+check(targetSystemPrompt({ ...log }).includes("folder in layr is named after it"), "the prompt: keep the id");
+
+// An id is free only when layr has no folder for it: a plugin installed (its versions), or uninstalled (its history).
+mkdirSync(path.join(packages, "taken", "store", "0.1.0"), { recursive: true });
+mkdirSync(path.join(packages, "gone", "history.git"), { recursive: true });
+check(newPluginFolder({ name: "Taken" }).id === "taken-2", "an installed plugin's id is taken");
+check(newPluginFolder({ name: "Gone" }).id === "gone-2", "an uninstalled plugin's id is taken");
+check(newPluginFolder({ name: "Field log" }).id === "field-log-2", "a plugin being made has its id");
+// A folder left in the old place (no layr.json yet: the core didn't take it in) keeps its id too.
+check(newPluginFolder({ name: "Lab notebook" }).id === "lab-notebook-3", "a folder left in the old place has its id");
+const ext2 = await resolveTarget(hub, { kind: "extension", name: "Tab titles" });
+check(ext2.folder === path.join(packages, "tab-titles", "mine") && readManifest(ext2.folder)?.extension === "extension"
+  && git(ext2.folder, "status", "--porcelain") === "", "a new extension: its template in its own folder", ext2.folder);
+
+// Targets: the plugins layr runs, plus folders of plugins made here that aren't in layr yet.
+const mk = (id, { manifest, dotGit } = {}) => {
+  const dir = path.join(packages, id, "mine");
+  mkdirSync(dir, { recursive: true });
+  if (manifest) writeFileSync(path.join(dir, "layr.json"), JSON.stringify(manifest));
+  if (dotGit === "file") writeFileSync(path.join(dir, ".git"), `gitdir: ${path.join(packages, id, "history.git")}\n`);
+  if (dotGit === "folder") mkdirSync(path.join(dir, ".git"));
+  return dir;
+};
+const own = mk("own", { manifest: { id: "own", name: "Own" }, dotGit: "folder" }); // layr runs it from there
+repos.push({ id: "own", name: "Own", kind: "made", path: own, linked: true });
+mk("kept", { manifest: { id: "kept", name: "Kept" }, dotGit: "file" }); // a layr.json, layr doesn't run it
+mk("bare-copy", { dotGit: "file" }); // a worktree without a layr.json: nothing to work on
+mk("quiet", { manifest: { id: "quiet", name: "Quiet again" }, dotGit: "folder" }); // its id runs from elsewhere
+const { targets: now } = await listTargets(hub);
+const at = (id) => now.filter((t) => t.id === id);
+check(at("own").length === 1 && at("own")[0].linked === true, "a plugin of yours layr runs is listed once", at("own"));
+check(at("field-log").length === 1 && at("field-log")[0].linked === false && at("field-log")[0].place === "made"
+  && at("field-log")[0].path === log.folder, "a new plugin without a layr.json yet is listed, not linked",
+  at("field-log"));
+check(at("tab-titles")[0]?.extension === true && at("tab-titles")[0].linked === false, "a new extension too");
+check(at("kept").length === 1 && at("kept")[0].name === "Kept" && !at("kept")[0].linked,
+  "a folder with a layr.json too");
+check(at("bare-copy").length === 0 && at("taken").length === 0 && at("gone").length === 0,
+  "folders without a plugin of yours in them aren't", now.map((t) => t.id));
+check(at("quiet").length === 1 && at("quiet")[0].path === made, "an installed id isn't listed twice", at("quiet"));
+check(at("lab-notebook")[0]?.path === path.join(tmp, "layr-plugins", "lab-notebook") && !at("lab-notebook")[0].linked,
+  "a folder left in the old place is still listed", at("lab-notebook"));
+// A thread on such a folder works there.
+const again2 = await resolveTarget(hub, { kind: "plugin", plugin: "field-log" });
+check(again2.folder === log.folder && again2.place === "made" && !again2.isNew, "a thread on a plugin being made",
+  again2);
 
 console.log(failures ? `\n${failures} failed` : "\nall passed");
 process.exit(failures ? 1 : 0);
