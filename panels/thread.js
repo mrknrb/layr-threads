@@ -12,6 +12,7 @@ import {
   fillSelect,
   h,
   icon,
+  modelName,
   modelOptions,
   money,
   notify,
@@ -484,6 +485,7 @@ function noteAgent(e) {
       description: String(e.input?.description ?? ""),
       type: e.input?.subagent_type ?? null,
       prompt: String(e.input?.prompt ?? ""),
+      asked: typeof e.input?.model === "string" ? e.input.model : null,
       parent: e.parent ?? null,
       agent: null,
       result: null,
@@ -504,7 +506,9 @@ function agentInfo(a) {
   const known = (state.thread?.subagents ?? []).find((s) => s.toolUseId === a.toolUseId || (a.agent && s.id === a.agent));
   const id = a.agent ?? known?.id ?? agentIdIn(a.result);
   const status = known?.status ?? (a.result != null ? "done" : busy(state.thread) ? "running" : "stopped");
-  return { id, status };
+  // The model its answers came from; threads from before layr kept it: the one its Agent call asked for, if any.
+  const model = known?.model ? modelName(known.model) : a.asked ? modelName(a.asked) : null;
+  return { id, status, model };
 }
 
 const SUB_STATUS = { running: "working", done: "finished", failed: "failed", stopped: "stopped" };
@@ -663,7 +667,7 @@ function renderSubbar() {
     bar.hidden = true;
     return bar.replaceChildren();
   }
-  const { status } = agentInfo(a);
+  const { status, model } = agentInfo(a);
   const backTo = state.subStack.length ? state.agents.get(state.subStack.at(-1)) : null;
   const back = h("button", { class: "btn ghost small" }, "← ",
     backTo ? `Back to “${backTo.description || "subagent"}”` : "Main thread");
@@ -672,7 +676,8 @@ function renderSubbar() {
   toMain?.addEventListener("click", () => closeSub({ all: true }));
   bar.replaceChildren(...[back, toMain].filter(Boolean), h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }),
     h("span", { class: "sub-title", title: a.description }, a.description || "Subagent"),
-    ...(a.type ? [h("span", { class: "badge" }, a.type)] : []), h("span", { class: "muted" }, SUB_STATUS[status] ?? status));
+    ...(a.type ? [h("span", { class: "badge" }, a.type)] : []), ...(model ? [h("span", { class: "badge", title: "Its model" }, model)] : []),
+    h("span", { class: "muted" }, SUB_STATUS[status] ?? status));
   bar.hidden = false;
 }
 
@@ -694,10 +699,11 @@ function renderSubagents() {
   const infos = list.map((a) => ({ a, ...agentInfo(a) }));
   const running = infos.filter((i) => i.status === "running").length;
   const wasOpen = el.querySelector("details")?.open ?? false;
-  const rows = infos.slice().reverse().map(({ a, status }) => {
+  for (const { a, model } of infos) setCardModel(a.toolUseId, model);
+  const rows = infos.slice().reverse().map(({ a, status, model }) => {
     const row = h("button", { class: `sub-item${state.sub?.toolUseId === a.toolUseId ? " on" : ""}`, title: a.prompt },
       h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }), h("span", { class: "t" }, a.description || "Subagent"),
-      h("span", { class: "k" }, [a.type, SUB_STATUS[status] ?? status].filter(Boolean).join(" · ")));
+      h("span", { class: "k" }, [a.type, model, SUB_STATUS[status] ?? status].filter(Boolean).join(" · ")));
     row.addEventListener("click", () => void openSub(a.toolUseId, { push: false }));
     return row;
   });
@@ -707,6 +713,15 @@ function renderSubagents() {
       h("span", { class: "muted hint" }, "open one to see it and write to it")),
     h("div", { class: "sub-list" }, rows)));
   el.hidden = false;
+}
+
+/** The model on a subagent's Agent card (it is known once the subagent answers). */
+function setCardModel(toolUseId, model) {
+  const card = state.tools.get(toolUseId);
+  if (card?.model && card.model.textContent !== (model ?? "")) {
+    card.model.textContent = model ?? "";
+    card.model.hidden = !model;
+  }
 }
 
 /** "14:05", the full date on hover. */
@@ -925,7 +940,9 @@ function toolCard(e) {
   const summary = toolSummary(e.name, e.input);
   // A subagent's card opens its conversation, where you can write to it too.
   let open = null;
+  let model = null;
   if (e.name === "Agent" || e.name === "Task") {
+    model = h("span", { class: "badge sub-model", title: "The subagent's model", hidden: true });
     open = h("button", { class: "btn ghost small open-sub", title: "Open this subagent's conversation; you can write to it there" },
       "Open");
     open.addEventListener("click", (ev) => {
@@ -936,7 +953,7 @@ function toolCard(e) {
   }
   const el = h("details", { class: "tool" },
     h("summary", {}, chev, toolIcon(e.name), h("span", { class: "name" }, toolLabel(e.name)),
-      h("span", { class: "sum", title: summary }, summary), open, stateEl),
+      h("span", { class: "sum", title: summary }, summary), model, open, stateEl),
   );
   const body = h("div", { class: "body" });
   const children = h("div", { class: "children" });
@@ -950,8 +967,10 @@ function toolCard(e) {
   }
   body.append(children);
   el.append(body);
-  const card = { el, state: stateEl, body, children, name: e.name, done: false, id: e.id };
+  const card = { el, state: stateEl, body, children, name: e.name, done: false, id: e.id, model };
   state.tools.set(e.id, card);
+  const a = model && state.agents.get(e.id);
+  if (a) setCardModel(e.id, agentInfo(a).model);
   return el;
 }
 

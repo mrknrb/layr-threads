@@ -5,7 +5,7 @@
 // with an in-panel confirm where a button asks for one. The task comes from `pipeline__thread_task` (ui.js threadTask).
 import { h, icon, notify } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
-import { confirmIn, onPhone, openLink, pipelineCall } from "./ui.js";
+import { confirmIn, confirmPopup, onPhone, openLink, pipelineCall } from "./ui.js";
 
 const COLUMN = { proposed: "Proposed", ready: "Ready", running: "Running", stopped: "Stopped", settled: "Settled" };
 const STAKES_TONE = { high: "danger", medium: "warn", low: "" };
@@ -90,7 +90,10 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
     const kind = btn.kind === "primary" ? " primary" : btn.kind === "danger" ? " danger" : "";
     const el2 = h("button", { class: `btn small${kind}` }, btn.label);
     el2.addEventListener("click", async () => {
-      if (btn.confirm && !(await confirmIn(actions, btn.confirm, { ok: btn.label, danger: btn.kind === "danger" }))) return;
+      // Land asks only whether you're sure, in a popup (the board's Land says the whole of what happens).
+      if (btn.id === "land") {
+        if (!(await confirmPopup(`Land #${task.number}? Are you sure?`, { ok: "Land" }))) return;
+      } else if (btn.confirm && !(await confirmIn(actions, btn.confirm, { ok: btn.label, danger: btn.kind === "danger" }))) return;
       for (const x of actions.querySelectorAll("button")) x.disabled = true;
       try {
         // "start" is Land now too (a Land waiting for Away): only Send now takes the text box along.

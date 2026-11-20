@@ -442,6 +442,7 @@ body.proto-resizing iframe {
 #subagents .sub-item .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 #subagents .sub-item .k { color: var(--fg-dim); font-size: 11.5px; flex: none; }
 details.tool > summary .open-sub { flex: none; padding: 1px 8px; font-size: 11.5px; }
+details.tool > summary .sub-model { flex: none; height: 18px; font-size: 11px; }
 .msg-user.from-claude { align-self: flex-start; background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 14px 14px 14px 4px; white-space: normal; max-width: 100%; }
 .msg-user.from-claude .from { font-size: 10.5px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.06em;

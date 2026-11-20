@@ -114,6 +114,30 @@ export function confirmIn(holder, text, { ok = "OK", danger = false } = {}) {
   });
 }
 
+/** A small popup over the panel asking `text`: resolves true (OK) or false (Cancel, Escape, a click beside it). */
+export function confirmPopup(text, { ok = "OK" } = {}) {
+  return new Promise((resolve) => {
+    const yes = h("button", { class: "btn small primary" }, ok);
+    const no = h("button", { class: "btn small" }, "Cancel");
+    const box = h("div", { class: "popup", role: "dialog" }, h("div", { class: "popup-text" }, text), h("div", { class: "popup-buttons" }, no, yes));
+    const back = h("div", { class: "popup-back" }, box);
+    const done = (v) => {
+      document.removeEventListener("keydown", key, true);
+      back.remove();
+      resolve(v);
+    };
+    const key = (e) => {
+      if (e.key === "Escape") (e.preventDefault(), done(false));
+    };
+    yes.addEventListener("click", () => done(true));
+    no.addEventListener("click", () => done(false));
+    back.addEventListener("click", (e) => e.target === back && done(false));
+    document.addEventListener("keydown", key, true);
+    document.body.append(back);
+    yes.focus();
+  });
+}
+
 // ------------------------------------------------------------------ the pipeline plugin
 
 /** A pipeline tool; throws when the pipeline isn't installed, or doesn't have the tool. */

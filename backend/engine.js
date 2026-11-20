@@ -779,6 +779,15 @@ export class Engine {
     this.emitThread(meta);
   }
 
+  /** The model a subagent's answer came from (Claude Code names it on each message): kept on the subagent once. */
+  subagentModel(meta, toolUseId, agentId, model) {
+    const list = meta.subagents ?? [];
+    const known = list.find((s) => s.toolUseId === toolUseId || (agentId && s.id === agentId));
+    if (!known || known.model === model) return;
+    this.store.updateThread(meta.id, { subagents: list.map((s) => (s === known ? { ...s, model } : s)) });
+    this.emitThread(meta);
+  }
+
   /** A task ended: a subagent among them is completed, failed or stopped now. */
   subagentEnded(meta, taskId, status) {
     const list = meta.subagents ?? [];
@@ -1571,6 +1580,7 @@ export class Engine {
     if (!live.turnActive && !parent) this.beginTurn(meta, live);
     this.flushDeltas(meta.id);
     const m = msg.message ?? {};
+    if (parent && m.model) this.subagentModel(meta, parent, msg.agent_id ?? null, m.model);
     const content = Array.isArray(m.content) ? m.content : [];
     content.forEach((block, i) => {
       const fallback = `${msg.uuid ?? m.id}:${i}`;
