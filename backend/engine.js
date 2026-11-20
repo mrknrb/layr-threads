@@ -654,6 +654,9 @@ export class Engine {
     const restored = (await this.restoreWorkspace(meta)) ?? meta.restoreNote ?? null;
     if (meta.restoreNote) this.store.updateThread(meta.id, { restoreNote: null });
     if (this.folderGone(meta)) throw new Error(goneText(meta));
+    // 0.6.0: layr moved the plugin's folder since the last turn (moved.js): Claude is told where it works now.
+    const moved = meta.movedNote ?? null;
+    if (moved) this.store.updateThread(meta.id, { movedNote: null });
     // `relay`: the user's message to a subagent, which the main agent passes on (sendToSubagent).
     const message = relay
       ? this.relayMessage(meta, relay, text, savedImages ?? this.saveImages(meta, images))
@@ -675,6 +678,7 @@ export class Engine {
     this.beginTurn(meta, live);
     this.tellLostBackground(meta, message.sdk);
     if (restored) prependNote(message.sdk, restored);
+    if (moved) prependNote(message.sdk, moved);
     live.input.push(message.sdk);
     this.touch(meta, { preview: preview(text) });
   }

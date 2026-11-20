@@ -1,13 +1,13 @@
 // Plugins and Chrome extensions as what a thread works on (docs/ARCHITECTURE.md › The claude plugin › Threads on a
 // plugin or an extension). A thread's `target` is a plugin: one you made (its own folder and repository), one from the
-// store (layr__plugin_edit makes your copy, branch `mine`, first), one linked from a bigger repository, or a new one
-// made in ~/layr-plugins. An extension is a plugin that brings a Chrome extension (layr.json `extension`), so it gets
-// the same git history, undo, versions and publishing as any plugin.
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+// store (layr__plugin_edit makes your copy, branch `mine`, first), one linked from a bigger repository, or a new one,
+// made in a folder of its own (pluginMaker.js says where). An extension is a plugin that brings a Chrome extension
+// (layr.json `extension`), so it gets the same git history, undo, versions and publishing as any plugin.
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { initPluginRepo } from "./autoCommit.js";
-import { findDocs, newPluginFolder, pluginsRoot } from "./pluginMaker.js";
+import { findDocs, newPluginFolder, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { errorMessage, log } from "./util.js";
 
 export const TARGET_KINDS = ["plugin", "extension"];
@@ -30,14 +30,50 @@ function samePath(a, b) {
 
 /** Is this project the old plugin maker's folder for every plugin (`~/layr-plugins`)? */
 export function isPluginsRoot(dir) {
-  return samePath(dir, pluginsRoot());
+  return samePath(dir, oldPluginsRoot());
+}
+
+function isFolder(dir) {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function subfolders(dir) {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return []; // no such folder (yet)
+  }
+}
+
+/**
+ * The folders plugins are made in, whether layr runs them or not, as `{dir, id}` (`id`: the folder's own, used until
+ * its layr.json says one). With one folder for each plugin: every `<packages>/<id>/mine` that has a layr.json or is a
+ * repository of its own (`.git` is a folder: a plugin made here, whose layr.json Claude hasn't written yet; your
+ * changes to an installed plugin are a worktree, `.git` a file). And the folders of the old place for every plugin
+ * (`~/layr-plugins`): all there is on an older core, and on a newer one those it left there because they have no
+ * layr.json yet.
+ */
+function madeFolders() {
+  const out = [];
+  const packages = packagesRoot();
+  for (const id of packages ? subfolders(packages) : []) {
+    const dir = path.join(packages, id, "mine");
+    if (existsSync(path.join(dir, "layr.json")) || isFolder(path.join(dir, ".git"))) out.push({ dir, id });
+  }
+  const old = oldPluginsRoot();
+  for (const id of subfolders(old)) out.push({ dir: path.join(old, id), id });
+  return out;
 }
 
 /**
  * Every installed plugin (the core's `layr__plugin_repos`) as a target: `{id, name, version, description, place, path,
  * extension, linked, repository}`; `place`: made (yours, its own repository), changed (a store plugin with your
- * changes), store (as it came), inside (linked from a bigger repository: no versions of its own). Plus plugins made
- * in ~/layr-plugins that aren't in layr yet (place made, `linked: false`).
+ * changes), store (as it came), inside (linked from a bigger repository: no versions of its own). Plus the plugins
+ * made here that aren't in layr yet (madeFolders: place made, `linked: false`).
  */
 export async function listTargets(hub) {
   let plugins = [];
@@ -67,29 +103,22 @@ export async function listTargets(hub) {
     };
   });
   // Folders the plugin maker made whose layr.json isn't in layr yet (Claude hasn't finished, or it isn't valid).
-  try {
-    const root = pluginsRoot();
-    for (const d of readdirSync(root, { withFileTypes: true })) {
-      if (!d.isDirectory()) continue;
-      const dir = path.join(root, d.name);
-      if (out.some((t) => samePath(t.path, dir))) continue;
-      const manifest = readManifest(dir);
-      const id = manifest?.id ?? d.name;
-      if (out.some((t) => t.id === id)) continue;
-      out.push({
-        id,
-        name: manifest?.name ?? d.name,
-        version: manifest?.version ?? null,
-        description: manifest?.description ?? "",
-        place: "made",
-        path: dir,
-        extension: Boolean(manifest?.extension) || existsSync(path.join(dir, "extension", "manifest.json")),
-        linked: false,
-        repository: manifest?.repository ?? null,
-      });
-    }
-  } catch {
-    // no plugins folder yet
+  for (const { dir, id: folderId } of madeFolders()) {
+    if (out.some((t) => samePath(t.path, dir))) continue;
+    const manifest = readManifest(dir);
+    const id = manifest?.id ?? folderId;
+    if (out.some((t) => t.id === id)) continue;
+    out.push({
+      id,
+      name: manifest?.name ?? folderId,
+      version: manifest?.version ?? null,
+      description: manifest?.description ?? "",
+      place: "made",
+      path: dir,
+      extension: Boolean(manifest?.extension) || existsSync(path.join(dir, "extension", "manifest.json")),
+      linked: false,
+      repository: manifest?.repository ?? null,
+    });
   }
   return { targets: out, git, error };
 }
@@ -219,10 +248,14 @@ export function targetSystemPrompt({ id, name, folder, place, isNew, extension, 
         .join("\n")
     : "- (layr's docs were not found on this PC: follow the summary below)";
   const what = extension ? "a Chrome extension inside a layr plugin" : "a layr plugin";
+  // With one folder for each plugin the folder is named after the id (`<packages>/<id>/mine`).
+  const idNote = packagesRoot()
+    ? "keep it in layr.json: the plugin's folder in layr is named after it"
+    : "keep it in layr.json unless the user asks for another";
   const intro = isNew
     ? `You are making ${what}. The person you are helping may not program at all: talk in plain words, never assume
 they know code, make decisions yourself, and only ask about what they want, not how to build it.
-The plugin's id is "${id}" (keep it in layr.json unless the user asks for another).`
+The plugin's id is "${id}" (${idNote}).`
     : `You are changing ${what}: "${name}" (id "${id}"). Read its layr.json and files first. Keep what works; talk in
 plain words; ask only about what the person wants, not how to build it.`;
   const placeNote = {

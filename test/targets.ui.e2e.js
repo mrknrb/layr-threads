@@ -42,7 +42,8 @@ const server = spawn(process.execPath, [path.join(pluginDir, "dev", "devserver.j
   path.join(tmp, "data"), "--repos", reposFile], {
   cwd: pluginDir,
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "layr-plugins") },
+  // As on an older core (every plugin made here in one folder): never the packages folder of a layr this is run from.
+  env: { ...process.env, LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "layr-plugins"), LAYR_PACKAGES: "" },
 });
 server.stderr.on("data", (d) => process.env.LAYR_TEST_VERBOSE && process.stderr.write(d));
 await new Promise((resolve) => server.stdout.on("data", (d) => String(d).includes("dev server") && resolve()));
