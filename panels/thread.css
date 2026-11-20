@@ -305,6 +305,18 @@ a.layr-link { text-decoration-style: dashed; }
 #changes .commit-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; }
 #changes .commit-row .sha { color: var(--accent); font-size: 11.5px; }
 #changes .commit-row .subject { flex: 1; min-width: 0; }
+/* 0.7.0: the thread's plugin list */
+#plugins { flex: none; border-bottom: 1px solid var(--border); padding: 5px 14px; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 6px; font-size: 12px; }
+#plugins .plugins-label { color: var(--fg-dim); font-weight: 600; margin-right: 2px; }
+.plugin-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-2); color: var(--fg); padding: 2px 8px; font-size: 12px; cursor: pointer; max-width: 260px; }
+.plugin-chip:hover { background: var(--bg-3); }
+.plugin-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-chip .ver { color: var(--fg-dim); font-family: var(--font-mono); font-size: 11px; }
+.plugin-chip .mode { font-size: 10.5px; border-radius: 999px; padding: 0 6px; background: var(--bg-3); color: var(--fg-dim); }
+.plugin-chip.change { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.plugin-chip.change .mode { background: color-mix(in srgb, var(--accent) 18%, var(--bg)); color: var(--accent); }
 #task { flex: none; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 6%, var(--bg));
   padding: 7px 14px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
 #task .task-head { display: flex; align-items: center; gap: 8px; min-width: 0; }

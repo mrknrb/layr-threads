@@ -1038,8 +1038,8 @@ function renderApproval(requestId) {
     const decision = answer?.decision ?? "expired";
     const text =
       decision === "allow"
-        ? e.kind === "question" ? `${e.questions?.length === 1 ? `${e.questions[0].question} → ` : "Answered: "}${formatAnswers(answer.answers)}` : e.kind === "plan" ? "Plan approved" : "Allowed"
-        : decision === "allow_always" ? "Allowed for this thread"
+        ? e.kind === "question" ? `${e.questions?.length === 1 ? `${e.questions[0].question} → ` : "Answered: "}${formatAnswers(answer.answers)}` : e.kind === "plan" ? "Plan approved" : e.kind === "plugin" ? `${e.title}: allowed` : "Allowed"
+        : decision === "allow_always" ? e.kind === "plugin" ? `${e.title}: allowed, and every plugin in this thread` : "Allowed for this thread"
           : decision === "deny" ? `${e.kind === "plan" ? "Kept planning" : answer.reason === "cancelled" ? "Cancelled" : "Denied"}${answer.message ? `: ${answer.message}` : ""}`
             : `Not answered${e.kind === "question" && e.questions?.[0] ? `: ${e.questions[0].question}` : e.kind === "permission" ? `: ${describePermission(e)}` : ""} (the turn ended)`;
     const cls = decision.startsWith("allow") ? "allow" : decision === "deny" ? "deny" : "";
@@ -1055,6 +1055,7 @@ function renderApproval(requestId) {
   }
   if (e.kind === "question") return a.el.replaceChildren(questionCard(e, a.inline));
   if (e.kind === "plan") return a.el.replaceChildren(planCard(e));
+  if (e.kind === "plugin") return a.el.replaceChildren(pluginRequestCard(e));
   a.el.replaceChildren(permissionCard(e, a.inline));
 }
 
@@ -1109,6 +1110,26 @@ function describePermission(e) {
     MultiEdit: "edit a file", NotebookEdit: "edit a notebook", WebFetch: "open a web page", WebSearch: "search the web" };
   const verb = verbs[e.tool] ?? `use ${toolLabel(e.tool)}`;
   return `Claude wants to ${verb}${s && e.tool !== "Bash" ? `: ${s}` : ""}`;
+}
+
+/** 0.7.0: Claude asks to change a plugin of the thread's list (plugin_change): allow, allow every plugin, refuse. */
+function pluginRequestCard(e) {
+  const msg = h("input", { class: "input", placeholder: "Tell Claude why, or what to do instead (optional)" });
+  const allow = h("button", { class: "btn small primary" }, icon("check", 14), "Allow");
+  const always = h("button", { class: "btn small", title: "Claude may change any plugin it asks for in this thread" },
+    "Allow every plugin");
+  const deny = h("button", { class: "btn small danger" }, "Refuse");
+  const buttons = [allow, always, deny];
+  allow.addEventListener("click", () => answer(e, { decision: "allow" }, buttons));
+  always.addEventListener("click", () => answer(e, { decision: "allow_always" }, buttons));
+  deny.addEventListener("click", () => answer(e, { decision: "deny", message: msg.value.trim() || undefined }, buttons));
+  msg.addEventListener("keydown", (ev) => ev.key === "Enter" && deny.click());
+  return h("div", { class: "approval" },
+    h("div", { class: "ask" }, icon("box"), e.title),
+    e.reason ? h("div", { class: "reason" }, e.reason) : null,
+    h("div", { class: "muted", style: { fontSize: "12px" } },
+      "Every change is saved as a version: you can take back what this thread changed at any time."),
+    h("div", { class: "actions" }, allow, always, deny, msg));
 }
 
 /** Claude's question; what you pick or type is kept in the draft until it's answered. */
@@ -1192,8 +1213,13 @@ function setThread(t) {
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
   wsEl.title = ws.path ?? "";
-  // A thread on a plugin or an extension (0.3.2) says which, instead of the folder.
-  if (t.target?.plugin) {
+  // A thread on a plugin or an extension (0.3.2) says which, instead of the folder; one with a plugin list (0.7.0)
+  // how many it has (the list is the bar under the header).
+  if (Array.isArray(t.plugins)) {
+    const n = t.plugins.length;
+    wsEl.replaceChildren(icon("box", 12), n ? `${n} plugin${n === 1 ? "" : "s"}` : "no plugin yet");
+    wsEl.title = `The plugins this thread may read and change · its own folder ${ws.path ?? ""}`;
+  } else if (t.target?.plugin) {
     const ext = t.target.kind === "extension";
     wsEl.replaceChildren(icon(ext ? "puzzle" : "box", 12), t.target.plugin);
     wsEl.title = `${ext ? "Chrome extension" : "layr plugin"} ${t.target.plugin} · ${ws.path ?? ""}`;
@@ -1214,6 +1240,7 @@ function setThread(t) {
   renderQueue(t);
   renderPickers();
   renderWorking();
+  renderPlugins(t);
 }
 
 const busy = (t) => t && (t.status === "running" || t.status === "starting" || t.status === "waiting");
@@ -1690,10 +1717,12 @@ function autosize() {
 input.addEventListener("input", () => {
   autosize();
   renderSlash();
+  renderMention();
   saveDraft();
 });
 
 input.addEventListener("keydown", (ev) => {
+  if (mentionKey(ev)) return;
   if (slashKey(ev)) return;
   if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
@@ -1896,6 +1925,199 @@ function slashKey(ev) {
     pickSlash(c);
   } else if (ev.key === "Escape") {
     $("slash").hidden = true;
+  } else return false;
+  ev.preventDefault();
+  return true;
+}
+
+// ------------------------------------------------------------------ plugins in the thread (0.7.0)
+
+const MODE_LABEL = {
+  read: ["reads", "Claude may read it, and asks you before changing it"],
+  change: ["changes", "Claude may change it: every change is saved as a version"],
+};
+
+/** The bar under the header of a thread with a plugin list: its plugins, what Claude may do with each. */
+function renderPlugins(t) {
+  const el = $("plugins");
+  if (!Array.isArray(t.plugins)) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  const chips = t.plugins.map((p) => {
+    const [label, title] = MODE_LABEL[p.mode] ?? MODE_LABEL.read;
+    const chip = h("button", { class: `plugin-chip ${p.mode}`,
+      title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}` },
+    icon(p.extension ? "puzzle" : "box", 12), h("span", { class: "name" }, p.name),
+    p.version ? h("span", { class: "ver" }, p.version) : null, h("span", { class: "mode" }, label));
+    chip.addEventListener("click", (ev) => pluginMenu(ev, p));
+    chip.addEventListener("contextmenu", (ev) => pluginMenu(ev, p));
+    return chip;
+  });
+  const add = h("button", { class: "btn ghost small", title: "Put a plugin on the list: type @ and its name" },
+    icon("plus", 12), "Plugin");
+  add.addEventListener("click", () => {
+    const at = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, at);
+    input.value = `${before}${before && !/\s$/.test(before) ? " " : ""}@${input.value.slice(at)}`;
+    input.focus();
+    input.selectionStart = input.selectionEnd = before.length + (before && !/\s$/.test(before) ? 2 : 1);
+    renderMention();
+  });
+  el.replaceChildren(...[
+    h("span", { class: "plugins-label", title: "What this thread may read and change. Mention a plugin with @ to " +
+      "let Claude read it; Claude asks before changing one." }, "Plugins"),
+    ...chips,
+    t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
+    add,
+    t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
+      "all allowed") : null,
+  ].filter(Boolean));
+}
+
+async function setPlugin(args) {
+  try {
+    const r = await call("thread_plugin_set", { thread: state.id, ...args });
+    if (r?.thread) setThread(r.thread);
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+function pluginMenu(ev, p) {
+  const t = state.thread;
+  void contextMenu([
+    p.mode === "read"
+      ? { label: "Let Claude change it", icon: "edit", run: () => setPlugin({ plugin: p.id, mode: "change" }) }
+      : { label: "Read only", icon: "visibility", run: () => setPlugin({ plugin: p.id, mode: "read" }) },
+    p.mode === "change" ? { label: "Take back this thread's changes", icon: "undo", run: () => takeBack(p) } : null,
+    p.place !== "inside" ? { label: "History and undo", icon: "history", run: () => openLink(pluginPageLink(p.id, "history")) } : null,
+    p.extension ? { label: "Reload the extension", icon: "refresh", run: () => layr.tools.call("extension_reload", { plugin: p.id },
+      { plugin: "layr" }).then(() => notify("Extension reloaded", "success"), (e) => notify(e.message, "error")) } : null,
+    "-",
+    t?.plugins?.filter((x) => x.mode === "change").length > 1
+      ? { label: "Take back everything this thread changed", icon: "undo", run: () => takeBack(null) } : null,
+    t?.allowAllPlugins ? { label: "Ask again before changing plugins", icon: "lock", run: () => setPlugin({ allowAll: false }) } : null,
+    { label: "Take it off the list", icon: "close", run: () => setPlugin({ plugin: p.id, remove: true }) },
+  ], ev);
+}
+
+/** Undo what this thread changed in a plugin (null: in every plugin it may change), after asking. */
+async function takeBack(p) {
+  const what = p ? p.name : "every plugin";
+  const holder = $("plugins");
+  if (!(await confirmIn(holder, `Take back everything this thread changed in ${what}? Each undo is saved as a new version.`,
+    { ok: "Take back", danger: true }))) return;
+  try {
+    const r = await call("thread_take_back", { thread: state.id, ...(p ? { plugin: p.id } : {}) });
+    const failed = (r.results ?? []).filter((x) => x.error);
+    if (failed.length) notify(`Stopped: ${failed.map((x) => `${x.plugin}: ${x.error}`).join("; ")}`, "error");
+    else notify(`Taken back: ${(r.results ?? []).map((x) => `${x.plugin} (${x.undone})`).join(", ")}`, "success");
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+// `@` in the message of a thread with a plugin list: a picker of installed plugins (and, after `@id@`, their versions).
+let mentionShown = [];
+let mentionIndex = 0;
+let pluginCatalog = null;
+
+/** The `@word` being typed right before the caret, or null. */
+function mentionAt() {
+  const upto = input.value.slice(0, input.selectionStart ?? input.value.length);
+  const m = /(^|[\s(\[{,;"'])@([\w.@-]*)$/.exec(upto);
+  return m ? { q: m[2], start: upto.length - m[2].length - 1, end: upto.length } : null;
+}
+
+function renderMention() {
+  const el = $("slash");
+  const m = Array.isArray(state.thread?.plugins) ? mentionAt() : null;
+  if (!m) {
+    if (mentionShown.length) el.hidden = true;
+    mentionShown = [];
+    return;
+  }
+  if (!pluginCatalog) {
+    pluginCatalog = [];
+    void call("targets_list").then((r) => {
+      pluginCatalog = r.targets ?? [];
+      renderMention();
+    }, () => (pluginCatalog = null));
+    return;
+  }
+  const [idq, verq] = m.q.toLowerCase().split("@");
+  const match = (t) => !idq || t.id.includes(idq) || t.name.toLowerCase().includes(idq);
+  const rows = [];
+  for (const t of pluginCatalog.filter(match).sort((a, b) => Number(!a.id.startsWith(idq)) - Number(!b.id.startsWith(idq)) ||
+    a.name.localeCompare(b.name))) {
+    if (verq === undefined) {
+      rows.push({ t, version: null, source: null, text: t.description || PLACE_TEXT[t.place] || "" });
+      continue;
+    }
+    const main = t.sources?.[0]?.source ?? null;
+    for (const s of t.sources ?? []) {
+      for (const v of s.versions.filter((x) => x.startsWith(verq))) {
+        rows.push({ t, version: v, source: s.source === main ? null : s.source,
+          text: `${v === t.version ? "the version that runs · " : ""}${s.text}` });
+      }
+    }
+  }
+  mentionShown = rows.slice(0, 50);
+  if (!mentionShown.length) {
+    el.hidden = true;
+    return;
+  }
+  mentionIndex = Math.min(mentionIndex, mentionShown.length - 1);
+  el.replaceChildren(...mentionShown.map((r, i) => {
+    const row = h("button", { class: `slash-row${i === mentionIndex ? " on" : ""}` },
+      h("span", { class: "name" }, `@${r.t.id}${r.version ? `@${r.version}` : ""}`),
+      h("span", { class: "hint" }, r.version ? "" : r.t.name), h("span", { class: "desc" }, r.text));
+    row.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      void pickMention(r);
+    });
+    return row;
+  }));
+  el.hidden = false;
+  el.querySelector(".on")?.scrollIntoView({ block: "nearest" });
+}
+
+const PLACE_TEXT = { made: "yours", changed: "your copy of a store plugin", store: "from the store", inside: "in a repository" };
+
+/** Puts `@id` (or `@id@version`) into the message and the plugin on the list, to read. */
+async function pickMention(r) {
+  const m = mentionAt();
+  if (!m) return;
+  const token = `@${r.t.id}${r.version ? `@${r.version}` : ""} `;
+  input.value = input.value.slice(0, m.start) + token + input.value.slice(m.end);
+  input.selectionStart = input.selectionEnd = m.start + token.length;
+  mentionShown = [];
+  mentionIndex = 0;
+  $("slash").hidden = true;
+  autosize();
+  saveDraft();
+  input.focus();
+  try {
+    const r2 = await call("thread_plugin_add", { thread: state.id, plugin: r.t.id, mode: "read",
+      ...(r.version && r.version !== r.t.version ? { version: r.version } : {}), ...(r.source ? { source: r.source } : {}) });
+    if (r2?.thread) setThread(r2.thread);
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+function mentionKey(ev) {
+  if ($("slash").hidden || !mentionShown.length) return false;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    mentionIndex = (mentionIndex + (ev.key === "ArrowDown" ? 1 : -1) + mentionShown.length) % mentionShown.length;
+    renderMention();
+  } else if (ev.key === "Tab" || (ev.key === "Enter" && !ev.shiftKey)) {
+    void pickMention(mentionShown[mentionIndex]);
+  } else if (ev.key === "Escape") {
+    $("slash").hidden = true;
+    mentionShown = [];
   } else return false;
   ev.preventDefault();
   return true;

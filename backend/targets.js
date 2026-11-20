@@ -10,7 +10,7 @@ import { initPluginRepo } from "./autoCommit.js";
 import { findDocs, newPluginFolder, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { errorMessage, log } from "./util.js";
 
-export const TARGET_KINDS = ["plugin", "extension"];
+export const TARGET_KINDS = ["plugin", "extension", "plugins"];
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,6 +100,8 @@ export async function listTargets(hub) {
       extension: Boolean(manifest?.extension),
       linked: Boolean(p.linked),
       repository: p.repository ?? null,
+      // 0.7.0: every source's versions ([{source, text, versions}]), for references to a version.
+      sources: p.sources ?? [],
     };
   });
   // Folders the plugin maker made whose layr.json isn't in layr yet (Claude hasn't finished, or it isn't valid).
@@ -235,8 +237,9 @@ layr.tools.serve({
   return { folder, extension: ext, sdk: Boolean(sdk), pageSdk: Boolean(page) };
 }
 
-/** The system prompt of a thread on a plugin or an extension. */
-export function targetSystemPrompt({ id, name, folder, place, isNew, extension, hubUrl }) {
+/** The system prompt of a thread on a plugin or an extension. `guideOnly` (0.7.0): only what every plugin thread needs
+ * to know (the docs to read, the format, the extension part, noticing breaks), for a thread with several plugins. */
+export function targetSystemPrompt({ id, name, folder, place, isNew, extension, hubUrl, guideOnly = false }) {
   const docs = findDocs();
   const read = docs
     ? [
@@ -308,14 +311,7 @@ a fix${docs ? ` (${path.basename(docs.architecture)} › Problems)` : ""}:
    change.`
     : `## When you are done
 Say in two or three plain sentences what changed and how to see it (panels show changes when opened again).`;
-  return `# ${isNew ? "Making" : "Changing"} ${what}
-layr is an app that is an empty frame of panels where every feature is a plugin.
-${intro}
-
-Work only inside this folder: ${folder}
-${placeNote}
-
-Read these first:
+  const guide = `Read these first:
 ${read}
 
 ## The format in short
@@ -335,7 +331,16 @@ ${read}
   it runs once they turn developer mode on.
 ${extensionPart}
 
-${breaks}
+${breaks}`;
+  if (guideOnly) return guide;
+  return `# ${isNew ? "Making" : "Changing"} ${what}
+layr is an app that is an empty frame of panels where every feature is a plugin.
+${intro}
+
+Work only inside this folder: ${folder}
+${placeNote}
+
+${guide}
 
 ${done}`;
 }

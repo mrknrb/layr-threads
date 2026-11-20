@@ -18,7 +18,8 @@ import { Hub } from "./hub.js";
 import { applyMoves } from "./moved.js";
 import { linkIfReady, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
-import { isPluginsRoot, listTargets, readManifest, resolveTarget, TARGET_KINDS, targetSystemPrompt } from "./targets.js";
+import { parseMentions, publicRow, ThreadPlugins } from "./threadPlugins.js";
+import { isPluginsRoot, listTargets, readManifest, TARGET_KINDS } from "./targets.js";
 import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
 import { ensureDir, errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
@@ -45,15 +46,80 @@ const account = new Account({
 });
 const buildTimes = new BuildTimes({ dataDir, store });
 const engine = new Engine({ store, hub, account, buildTimes });
+// 0.7.0: threads with a plugin list (threadPlugins.js): their tools, folders, guard and prompt in each session.
+const plugins = new ThreadPlugins({ engine, hub, store, dataDir });
+engine.sessionExtras = (meta) => (ThreadPlugins.has(meta) ? plugins.sessionExtras(meta) : Promise.resolve(null));
+engine.autoAllow = (meta, toolName, input) => plugins.autoAllow(meta, toolName, input);
 
 // After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
 // threads on a plugin link a plugin they made into layr and reload its Chrome extension, if it brings one.
 engine.onTurnEnded = (meta, status) => {
+  // The plugins this turn held for writing are free again (one thread writes a plugin at a time).
+  plugins.locks.release(meta.id);
   if (status !== "done") return;
+  if (ThreadPlugins.has(meta)) {
+    void commitPlugins(meta).then((saved) => afterPluginsTurn(meta, saved));
+    return;
+  }
   void commitTurn(meta).finally(() => {
     if (meta.kind === "plugin") void afterPluginTurn(meta);
   });
 };
+
+/** A thread with a plugin list: one commit per plugin it changed (with the thread's trailers), each said in it. */
+async function commitPlugins(meta) {
+  if (process.env.LAYR_CLAUDE_AUTOCOMMIT === "0") return [];
+  const prompt = lastPrompt(store.readTranscript(meta.id));
+  const turn = Number.isInteger(meta.turns) && meta.turns > 0 ? meta.turns : undefined;
+  const saved = await plugins.commit(meta, { prompt, reply: engine.lastReply(meta.id), turn });
+  for (const { row, done } of saved) {
+    if (!done.commit) continue;
+    log(`saved ${done.files} file(s) of ${row.id}: ${done.subject}`);
+    const entry = store.append(meta.id, {
+      type: "system",
+      subtype: "saved",
+      text: `Saved ${row.name} as a version: ${done.subject}`,
+      commit: done.commit,
+      short: done.short,
+      turn: turn ?? null,
+      plugin: row.id,
+    });
+    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+  }
+  return saved;
+}
+
+/** After a turn of a thread with a plugin list: plugins made in it are linked into layr (again: manifest changes show),
+ * and those it changed that bring a Chrome extension are reloaded. */
+async function afterPluginsTurn(meta, saved) {
+  const changed = new Set(saved.filter((s) => s.done?.commit).map((s) => s.row.id));
+  for (const row of meta.plugins ?? []) {
+    if (row.mode !== "change") continue;
+    if (row.place === "made" && (changed.has(row.id) || (row.isNew && !row.linked))) await linkRow(meta, row);
+    if (changed.has(row.id) && readManifest(row.folder)?.extension) await reloadExtension(meta, row.id);
+  }
+}
+
+function linkRow(meta, row) {
+  return linkIfReady(hub, row.folder)
+    .then((info) => {
+      if (!info) return;
+      if (row.linked) return;
+      const rows = (meta.plugins ?? []).map((r) => (r.id === row.id ? { ...r, linked: true } : r));
+      store.updateThread(meta.id, { plugins: rows });
+      const entry = store.append(meta.id, { type: "system", text: `${info.name ?? row.name} is in layr now` });
+      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.notify(`New plugin: ${info.name ?? row.name}`, "success");
+      engine.emitThread(meta);
+    })
+    .catch((error) => {
+      log(`linking ${row.folder} failed:`, errorMessage(error));
+      const text = `layr couldn't load ${row.name}'s layr.json, so it still runs the last one it could read: ${truncate(
+        errorMessage(error), 400)}`;
+      const entry = store.append(meta.id, { type: "system", subtype: "link-failed", text });
+      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    });
+}
 
 async function afterPluginTurn(meta) {
   // Your own plugins (and the old plugin maker's threads) are linked again, so manifest changes show; a store
@@ -62,7 +128,13 @@ async function afterPluginTurn(meta) {
   const info = place === "made" ? await linkPluginFolder(meta) : null;
   const manifest = readManifest(meta.cwd);
   const plugin = manifest?.id ?? info?.id ?? meta.extra?.pluginId;
-  if (!manifest?.extension || !plugin || !hub.available) return;
+  if (!manifest?.extension || !plugin) return;
+  await reloadExtension(meta, plugin);
+}
+
+/** Reloads a plugin's Chrome extension in layr's web panels, and says in the thread what it reported right after. */
+async function reloadExtension(meta, plugin) {
+  if (!hub.available) return;
   try {
     const before = await hub.call("layr__extension_logs", { plugin, limit: 1 }).catch(() => null);
     await hub.call("layr__extension_reload", { plugin });
@@ -109,6 +181,12 @@ async function commitTurn(meta) {
   }
 }
 
+/** The plugins a thread works on: its list (0.7.0), else its target or the plugin folder it runs in. */
+function threadPlugins(meta) {
+  if (ThreadPlugins.has(meta)) return meta.plugins.map((r) => r.id);
+  return threadPlugin(meta) ?? pluginOfFolder(meta.cwd);
+}
+
 /** The installed plugin a thread works on (thread_start's target), or null. */
 function threadPlugin(meta) {
   return meta.kind === "plugin" ? (meta.extra?.pluginId ?? null) : null;
@@ -146,7 +224,7 @@ function linkPluginFolder(meta) {
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.6.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.7.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -243,12 +321,21 @@ tool(
     project: z.string().optional().describe("Project id, name or folder (a folder that isn't a project yet is added); not with target"),
     target: z
       .object({
-        kind: z.enum(TARGET_KINDS).describe("plugin, or extension (a plugin that brings a Chrome extension)"),
-        plugin: z.string().optional().describe("An installed plugin's id (targets_list); a store plugin gets your own copy first. Leave out to make a new one"),
+        kind: z.enum(TARGET_KINDS).describe("plugin, or extension (a plugin that brings a Chrome extension); plugins: no " +
+          "plugin yet (the list fills as you go)"),
+        plugin: z.string().optional().describe("An installed plugin's id (targets_list), on the list allowed to change; a store plugin gets your own copy first. Leave out to make a new one (kind plugins: none)"),
+        version: z.string().optional().describe("With plugin: build on that version instead of the one that runs"),
+        source: z.string().optional().describe("With version: another publisher's (targets_list sources)"),
         name: z.string().optional().describe("A new one's name"),
+        plugins: z
+          .array(z.object({ plugin: z.string(), version: z.string().optional(), source: z.string().optional(),
+            change: z.boolean().optional().describe("Allowed to change (default: read only)") }))
+          .optional()
+          .describe("More plugins on the thread's list"),
       })
       .optional()
-      .describe("Work on a layr plugin or Chrome extension instead of a project: the thread runs in its folder and knows how layr plugins work"),
+      .describe("Work on layr plugins instead of a project: the thread runs in an empty folder of its own with a list " +
+        "of the plugins it may read and change (0.7.0), and knows how layr plugins work"),
     prompt: z.string(),
     model: z.string().optional().describe("opus, sonnet, haiku, or an id from models_list (default: the project's)"),
     effort: effort.optional(),
@@ -278,29 +365,54 @@ tool(
   },
 );
 
-/** thread_start with a target: its folder (made, or your copy of a store plugin), a project for it, the system prompt. */
+/**
+ * thread_start with a target (0.7.0): an empty folder of the thread's own, and its plugin list: the plugin it names
+ * (allowed to change: made new, or your copy of a store plugin), more from `plugins`, and the ones the prompt mentions
+ * (to read). All plugin threads share one project, "Plugin threads".
+ */
 async function startOnTarget(a) {
-  const t = await resolveTarget(hub, { ...a.target, description: a.target.plugin ? undefined : a.prompt });
-  const project = store.addProject({ path: t.folder, name: t.name, kind: "plugin", pluginId: t.id });
+  const kind = a.target.kind;
+  const rows = [];
+  let main = null;
+  if (a.target.plugin) {
+    main = await plugins.resolve({ plugin: a.target.plugin, version: a.target.version, source: a.target.source, mode: "change" });
+  } else if (kind !== "plugins") {
+    main = await plugins.resolve({
+      newPlugin: { id: a.target.id, name: a.target.name, extension: kind === "extension", description: a.prompt }, mode: "change",
+    });
+  }
+  if (main) rows.push(main);
+  for (const p of a.target.plugins ?? []) {
+    if (rows.some((r) => r.id === p.plugin)) continue;
+    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read" }));
+  }
+  const known = new Set((await plugins.catalog()).map((t) => t.id));
+  for (const m of parseMentions(a.prompt)) {
+    if (!known.has(m.id) || rows.some((r) => r.id === m.id)) continue;
+    rows.push(await plugins.resolve({ plugin: m.id, version: m.version ?? undefined, mode: "read" }).catch(() => null));
+  }
+  const workDir = ensureDir(plugins.workDir());
+  const project = store.addProject({ path: path.dirname(workDir), name: "Plugin threads", kind: "plugin" });
   hub.emit("claude:threads", { kind: "projects" });
-  const prompt = t.isNew
-    ? `${a.target.name ? `Name: ${a.target.name}\n\n` : ""}Please make this ${t.extension ? "Chrome extension (as a layr plugin)" : "layr plugin"} for me:\n\n${a.prompt}`
+  const isNew = Boolean(main?.isNew);
+  const prompt = isNew
+    ? `${a.target.name ? `Name: ${a.target.name}\n\n` : ""}Please make this ${main.extension ? "Chrome extension (as a layr plugin)" : "layr plugin"} for me (id "${main.id}", folder ${main.folder}):\n\n${a.prompt}`
     : a.prompt;
   const thread = await engine.startThread({
     ...a,
     project: project.id,
     prompt,
-    // The title comes from what the person asked, not from the wrapped first prompt.
     title: a.title || titleFromPrompt(a.prompt),
-    permissionMode: a.permissionMode || (t.isNew ? "acceptEdits" : undefined),
-    workspace: { path: t.folder },
+    permissionMode: a.permissionMode || (isNew ? "acceptEdits" : undefined),
+    workspace: { path: workDir },
     branch: undefined,
     baseRef: undefined,
     kind: "plugin",
-    systemAppend: targetSystemPrompt({ ...t, hubUrl: hub.url }),
-    extra: { pluginId: t.id, folder: t.folder, target: t.kind, place: t.place, isNew: t.isNew },
+    plugins: rows.filter(Boolean),
+    extra: { target: "plugins", pluginId: main?.id ?? null, folder: workDir, place: main?.place ?? null, isNew },
   });
-  return { thread, folder: t.folder, pluginId: t.id, place: t.place, isNew: t.isNew };
+  return { thread, folder: main?.folder ?? workDir, pluginId: main?.id ?? null, place: main?.place ?? null, isNew,
+    plugins: rows.filter(Boolean).map(publicRow) };
 }
 
 tool(
@@ -333,7 +445,11 @@ tool(
     images: images.optional(),
     agent: z.string().optional().describe("A subagent's id (thread_status subagents): the message goes to it"),
   },
-  (a) => engine.send(a.thread, { text: a.text, images: a.images, mode: a.mode, agent: a.agent }),
+  async (a) => {
+    // 0.7.0: plugins mentioned in a thread with a plugin list (`@id`) go on it, to read.
+    if (!a.agent) await plugins.mentioned(engine.requireThread(a.thread), a.text).catch(() => []);
+    return engine.send(a.thread, { text: a.text, images: a.images, mode: a.mode, agent: a.agent });
+  },
 );
 
 tool(
@@ -386,7 +502,7 @@ tool(
     archived: z.union([z.boolean(), z.literal("all")]).optional(),
     query: z.string().optional().describe("Words in the title, last message or branch"),
   },
-  (a) => ({ threads: engine.list({ ...a, pluginOf: (t) => threadPlugin(t) ?? pluginOfFolder(t.cwd) }) }),
+  (a) => ({ threads: engine.list({ ...a, pluginOf: (t) => threadPlugins(t) }) }),
 );
 
 tool(
@@ -540,6 +656,89 @@ tool(
   "Messages queued for after the running turn: remove one, steer one in now, or resume a queue paused by a stop.",
   { thread: threadId, action: z.enum(["remove", "steer", "resume"]), item: z.string().optional().describe("Queued message id") },
   (a) => engine.queueAction(a.thread, a).then((thread) => ({ thread })),
+);
+
+// ------------------------------------------------------------------ plugins in a thread (0.7.0)
+
+const pluginId = z.string().describe("An installed plugin's id (targets_list)");
+
+tool(
+  "thread_plugins",
+  "A thread's plugin list (threads that change plugins): {plugins: [{id, name, mode: read | change, version, source, " +
+    "place, folder, extension, isNew, by}], allowAll}; null for other threads.",
+  { thread: threadId },
+  (a) => {
+    const meta = engine.requireThread(a.thread);
+    return { plugins: ThreadPlugins.has(meta) ? meta.plugins.map(publicRow) : null, allowAll: Boolean(meta.allowAllPlugins) };
+  },
+);
+
+tool(
+  "thread_plugin_add",
+  "Put a plugin on a thread's list: mode read (default) or change (a store plugin gets your own copy first); version " +
+    "(and source): read or build on that version; new: make a new plugin, allowed to change. Claude is told with the " +
+    "next message.",
+  {
+    thread: threadId,
+    plugin: pluginId.optional(),
+    mode: z.enum(["read", "change"]).optional(),
+    version: z.string().optional(),
+    source: z.string().optional(),
+    new: z.object({ name: z.string().optional(), extension: z.boolean().optional() }).optional(),
+  },
+  async (a) => {
+    if (!a.plugin && !a.new) throw new Error("Which plugin? Give plugin, or new");
+    const meta = engine.requireThread(a.thread);
+    const row = await plugins.add(meta, { plugin: a.plugin, mode: a.new ? "change" : a.mode ?? "read", version: a.version,
+      source: a.source, newPlugin: a.new ? { ...a.new } : null });
+    return { plugin: row, thread: engine.summary(meta) };
+  },
+);
+
+tool(
+  "thread_plugin_set",
+  "Change a plugin on a thread's list: mode read or change, or remove: true to take it off. allowAll: true lets Claude " +
+    "change any plugin it asks for in this thread without asking (false asks again).",
+  {
+    thread: threadId,
+    plugin: pluginId.optional(),
+    mode: z.enum(["read", "change"]).optional(),
+    remove: z.boolean().optional(),
+    allowAll: z.boolean().optional(),
+  },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    if (a.allowAll !== undefined) {
+      store.updateThread(meta.id, { allowAllPlugins: a.allowAll });
+      engine.emitThread(meta);
+    }
+    if (a.plugin && a.remove) plugins.remove(meta, a.plugin);
+    else if (a.plugin && a.mode) await plugins.setMode(meta, a.plugin, a.mode);
+    return { thread: engine.summary(meta) };
+  },
+);
+
+tool(
+  "thread_take_back",
+  "Take back what a thread changed in a plugin (or in every plugin it may change): its commits undone, newest first, " +
+    "each as a new commit (other threads' changes in between stay). Stops at a commit later changes conflict with. " +
+    "Gives {results: [{plugin, undone, of, error?}]}.",
+  { thread: threadId, plugin: pluginId.optional() },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    if (engine.isTurnActive(meta.id)) throw new Error("Wait until the thread's turn ends");
+    const results = await plugins.takeBack(meta, a.plugin);
+    const said = results.map((r) => `${r.plugin}: ${r.undone} of ${r.of ?? 0} taken back${r.error ? ` (stopped: ${r.error})` : ""}`);
+    const entry = store.append(meta.id, { type: "system", subtype: "taken-back", text: `Took back this thread's changes: ${said.join("; ")}` });
+    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    const note = `The person took back what this thread changed (${said.join("; ")}): the files are as they were before.`;
+    store.updateThread(meta.id, { pluginsNote: meta.pluginsNote ? `${meta.pluginsNote}\n${note}` : note });
+    for (const r of results) {
+      const row = meta.plugins.find((x) => x.id === r.plugin);
+      if (r.undone && row && readManifest(row.folder)?.extension) await reloadExtension(meta, row.id);
+    }
+    return { results };
+  },
 );
 
 tool(

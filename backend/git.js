@@ -1,16 +1,78 @@
 // Git worktrees for threads: a new branch in its own folder, so a thread's changes stay apart from the project's
 // checkout until the user merges them.
+//
+// 0.7.0: a plugin's folder in layr's home (`packages/<id>/mine`, `packages/<id>/merge`) keeps no .git: its history is
+// beside it (`history.git`, whose worktree it is, or `repo.git` for a plugin of your own; docs/ARCHITECTURE.md › The
+// history beside the folder). git() finds it as the core does, so commits after a turn still work, while git run by
+// Claude in that folder finds no repository.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { ensureDir, slugify } from "./util.js";
 
+const OUTSIDE_LEAVES = ["mine", "merge"];
+
+function samePath(a, b) {
+  const norm = (p) => path.resolve(String(p)).replace(/[\/]+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** The worktree of `repo` checked out in `dir`: found by the path it names back, else by the folder's name. */
+function worktreeAdmin(repo, dir) {
+  const worktrees = path.join(repo, "worktrees");
+  let names = [];
+  try {
+    names = readdirSync(worktrees);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const admin = path.join(worktrees, name);
+    try {
+      const back = readFileSync(path.join(admin, "gitdir"), "utf8").trim();
+      if (existsSync(path.join(admin, "HEAD")) && back && samePath(path.dirname(back), dir)) return admin;
+    } catch {
+      // not a worktree's folder
+    }
+  }
+  const byName = path.join(worktrees, path.basename(dir));
+  return existsSync(path.join(byName, "HEAD")) ? byName : null;
+}
+
+/** The history kept beside exactly this folder: its git directory, or null. */
+export function outsideGitDir(dir) {
+  if (existsSync(path.join(dir, ".git"))) return null;
+  const leaf = path.basename(dir).toLowerCase();
+  if (!OUTSIDE_LEAVES.includes(leaf)) return null;
+  const parent = path.dirname(dir);
+  if (leaf === "mine" && existsSync(path.join(parent, "repo.git", "HEAD"))) return path.join(parent, "repo.git");
+  return worktreeAdmin(path.join(parent, "history.git"), dir);
+}
+
+/** `{gitDir, workTree}` for `dir` or the plugin folder it is in, when that folder's history is beside it; else null. */
+export function outsideGit(dir) {
+  let d = path.resolve(String(dir));
+  for (;;) {
+    if (existsSync(path.join(d, ".git"))) return null;
+    const gitDir = outsideGitDir(d);
+    if (gitDir) return { gitDir, workTree: d };
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+
 export function git(cwd, args, { timeoutMs = 120_000 } = {}) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  const outside = outsideGit(cwd);
+  if (outside) Object.assign(env, { GIT_DIR: outside.gitDir, GIT_WORK_TREE: outside.workTree });
   return new Promise((resolve, reject) => {
     execFile(
       "git",
       args,
-      { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env },
       (error, stdout, stderr) => {
         if (error) {
           const detail = String(stderr || stdout || error.message).trim();

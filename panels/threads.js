@@ -29,6 +29,8 @@ import {
 } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
+/** 0.7.0: the form's "no plugin yet" (a thread whose plugin list fills as it goes). */
+const NONE = "__none";
 const MODES = [["projects", "folder", "Projects"], ["plugin", "box", "Plugins"], ["extension", "puzzle", "Extensions"]];
 const savedMode = localStorage.getItem("claude.mode");
 const state = {
@@ -231,9 +233,12 @@ function renderTargets() {
   const threads = visibleThreads().filter((t) => t.kind === "plugin");
   const byPlugin = new Map();
   for (const t of threads) {
-    const id = t.target?.plugin ?? "_";
-    if (!byPlugin.has(id)) byPlugin.set(id, []);
-    byPlugin.get(id).push(t);
+    // 0.7.0: a thread with a plugin list shows under each plugin on it; with none yet under "No plugin yet".
+    const ids = Array.isArray(t.plugins) ? t.plugins.map((p) => p.id) : [t.target?.plugin ?? "_"];
+    for (const id of ids.length ? ids : ["_"]) {
+      if (!byPlugin.has(id)) byPlugin.set(id, []);
+      byPlugin.get(id).push(t);
+    }
   }
   const known = new Map(state.targets.map((t) => [t.id, t]));
   const groups = [];
@@ -246,10 +251,10 @@ function renderTargets() {
   }
   for (const [id, own] of byPlugin) {
     if (known.has(id)) continue;
-    const k = own[0].target?.kind ?? "plugin";
-    if (k !== kind) continue;
-    groups.push({ t: { id, name: id === "_" ? "Other" : id, place: "made", path: own[0].cwd, extension: k === "extension",
-      missing: true }, threads: own });
+    const k = own[0].target?.kind === "extension" ? "extension" : "plugin";
+    if (k !== kind && !(id === "_" && own.some((t) => Array.isArray(t.plugins)))) continue;
+    groups.push({ t: { id, name: id === "_" ? "No plugin yet" : id, place: "made", path: id === "_" ? "" : own[0].cwd,
+      extension: k === "extension", missing: true }, threads: own });
   }
   groups.sort((a, b) => String(b.threads[0]?.lastActivity ?? "").localeCompare(String(a.threads[0]?.lastActivity ?? "")) ||
     a.t.name.localeCompare(b.t.name));
@@ -458,7 +463,7 @@ $("show-archived").addEventListener("click", async () => {
 $("new").addEventListener("click", () => {
   if (!$("new-form").hidden) return closeForm();
   if (state.mode === "projects") openForm();
-  else openTargetForm({ kind: state.mode, plugin: null });
+  else openTargetForm({ kind: state.mode, plugin: NONE });
 });
 $("add-project").addEventListener("click", () => openForm(null, { addProject: true }));
 
@@ -490,7 +495,7 @@ function projectOf(ref) {
  * Open the new-thread form from panel params: `{new: true}`, or `{prompt, project?}` (the concepts panel opens it so,
  * with a prompt to start from). A form open already is filled again only when its prompt is still empty.
  * 0.3.2: `{new: true, target: "plugin" | "extension", plugin?}` opens it on Plugins or Extensions, on that plugin's id
- * (`"new"`: a new one; left out: the first in the list).
+ * (`"new"`: a new one; left out: no plugin yet, 0.7.0).
  */
 function openFormFrom(params) {
   if (!params?.new && !params?.prompt) return;
@@ -499,11 +504,11 @@ function openFormFrom(params) {
   if (open && (!params.prompt || typed)) return;
   if (params.target === "plugin" || params.target === "extension") {
     setMode(params.target);
-    const plugin = params.plugin === "new" ? null : typeof params.plugin === "string" ? params.plugin : "";
+    const plugin = params.plugin === "new" ? null : typeof params.plugin === "string" && params.plugin ? params.plugin : NONE;
     return openTargetForm({ kind: params.target, plugin, prompt: params.prompt });
   }
   if (params.project || params.prompt) setMode("projects");
-  else if (state.mode !== "projects") return openTargetForm({ kind: state.mode, plugin: null });
+  else if (state.mode !== "projects") return openTargetForm({ kind: state.mode, plugin: NONE });
   const project = projectOf(params.project);
   openForm(project?.id, { addProject: Boolean(project?.path), path: project?.path, prompt: params.prompt });
 }
@@ -705,7 +710,9 @@ const EXAMPLES = {
 };
 
 /**
- * The form for a thread on a plugin or extension. `plugin`: an id, null for a new one, "" for the first installed one.
+ * The form for a thread on a plugin or extension. `plugin`: an id, null for a new one, "" for the first installed one,
+ * NONE for no plugin yet (0.7.0: the thread starts in an empty folder and its list fills as you mention plugins).
+ * Every thread on plugins (0.7.0) has a list: the plugin picked here is on it, allowed to change.
  * A store plugin gets your own copy first (the backend asks layr__plugin_edit); a new one gets its own folder and
  * repository (in layr's home: one folder for each plugin), an extension from a small template that already talks to
  * layr.
@@ -718,13 +725,14 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
     .sort((a, b) => a.name.localeCompare(b.name));
   const store = kind === "plugin" ? state.targets.filter((t) => t.place === "store").sort((a, b) => a.name.localeCompare(b.name)) : [];
   const targetSel = h("select", { class: "select" },
+    h("option", { value: NONE }, "No plugin yet: mention plugins with @ as you go"),
     h("option", { value: "__new" }, `+ New ${word}`),
     mine.length ? h("optgroup", { label: kind === "extension" ? "Your extensions" : "Your plugins" },
       mine.map((t) => h("option", { value: t.id }, t.place === "inside" ? `${t.name} (in its repository)` : t.name))) : null,
     store.length ? h("optgroup", { label: "Installed from the store (Claude works on your own copy)" },
       store.map((t) => h("option", { value: t.id }, t.name))) : null);
   const first = plugin === "" ? (mine[0] ?? store[0])?.id : plugin;
-  targetSel.value = first && state.targets.some((t) => t.id === first) ? first : "__new";
+  targetSel.value = plugin === NONE ? NONE : first && state.targets.some((t) => t.id === first) ? first : "__new";
   const name = h("input", { class: "input", placeholder: kind === "extension" ? "Name (optional), e.g. Quiet YouTube" : "Name (optional), e.g. Lab notebook" });
   const nameRow = h("label", { class: "field" }, h("span", {}, "Name"), name);
   const prompt = h("textarea", { class: "textarea" });
@@ -760,16 +768,20 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
 
   function update() {
     const isNew = targetSel.value === "__new";
+    const isNone = targetSel.value === NONE;
     const t = state.targets.find((x) => x.id === targetSel.value);
     nameRow.hidden = !isNew;
     examples.hidden = !isNew;
-    promptLabel.textContent = isNew ? "What should it do?" : "What should Claude change?";
+    promptLabel.textContent = isNew ? "What should it do?" : isNone ? "What should Claude do?" : "What should Claude change?";
     prompt.placeholder = isNew
       ? `Say in your own words what the ${word} should do.  (Ctrl+Enter to start)`
-      : `For example: add a search box.  (Ctrl+Enter to start)`;
+      : isNone ? "For example: make @youtube sort by date, the way @pipeline does.  (Ctrl+Enter to start)"
+        : `For example: add a search box.  (Ctrl+Enter to start)`;
     // New ones: files without asking (commands still ask), as the plugin maker did; existing ones: as threads do.
     fillSelect(mode, permissionOptions(), isNew ? "acceptEdits" : (mode.dataset.touched ? mode.value : "default"));
-    note.textContent = isNew
+    note.textContent = isNone
+      ? "Claude starts in an empty folder of its own. Plugins you mention with @ it may read; it asks you before changing one. Every change is saved as a version you can take back."
+      : isNew
       ? `The new ${word} gets its own folder in layr, with its own history: every turn is saved as a version you can undo (its page › History).`
       : t?.place === "store"
         ? `Claude works on your own copy of ${t.name}; layr runs your copy from then on, and store updates are merged into it.`
@@ -786,7 +798,8 @@ function openTargetForm({ kind, plugin, prompt: text = "" }) {
   async function submit() {
     if (!prompt.value.trim()) return prompt.focus();
     const isNew = targetSel.value === "__new";
-    const target = { kind, ...(isNew ? (name.value.trim() ? { name: name.value.trim() } : {}) : { plugin: targetSel.value }) };
+    const target = targetSel.value === NONE ? { kind: "plugins" }
+      : { kind, ...(isNew ? (name.value.trim() ? { name: name.value.trim() } : {}) : { plugin: targetSel.value }) };
     start.disabled = true;
     const t = state.targets.find((x) => x.id === targetSel.value);
     status.textContent = isNew ? `Making the ${word}'s folder…` : t?.place === "store" ? "Making your copy…" : "Starting…";
