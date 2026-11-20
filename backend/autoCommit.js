@@ -5,9 +5,9 @@
 // only hold plugins inside a bigger repository are never committed by themselves. 0.3.14: the message ends with the
 // trailers `Layr-Thread: <thread id>` and `Layr-Turn: <n>` (the turn's number in its thread, 1-based), so the plugin
 // page's History links each commit to the thread and turn that made it.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
-import { git } from "./git.js";
+import { git, outsideGitDir } from "./git.js";
 
 export const CLAUDE_AUTHOR = { name: "layr (Claude)", email: "claude@layr.invalid" };
 export const LAYR_AUTHOR = { name: "layr", email: "layr@layr.invalid" };
@@ -94,11 +94,18 @@ export async function autoCommit(dir, { prompt, reply, author = CLAUDE_AUTHOR, t
 
 /**
  * A new plugin folder becomes a repository whose first commit holds what is there already (an extension's template,
- * else nothing), so Claude's first turn is history.
+ * else nothing), so Claude's first turn is history. `outside` (0.7.0, a core that keeps histories beside the folders):
+ * the repository is `../repo.git`, and the folder keeps no .git (docs/ARCHITECTURE.md › The history beside the folder).
  */
-export async function initPluginRepo(folder, id) {
-  if (existsSync(path.join(folder, ".git"))) return false;
-  await git(folder, ["init", "-q", "--initial-branch=main"]);
+export async function initPluginRepo(folder, id, { outside = false } = {}) {
+  if (existsSync(path.join(folder, ".git")) || outsideGitDir(folder)) return false;
+  const beside = outside && path.basename(folder).toLowerCase() === "mine" ? path.join(path.dirname(folder), "repo.git") : null;
+  if (beside && !existsSync(beside)) {
+    await git(path.dirname(folder), ["init", "-q", "--initial-branch=main", `--separate-git-dir=${beside}`, folder]);
+    rmSync(path.join(folder, ".git"), { force: true });
+  } else {
+    await git(folder, ["init", "-q", "--initial-branch=main"]);
+  }
   await git(folder, ["add", "-A"]);
   await git(folder, [...identityArgs(LAYR_AUTHOR), "commit", "-q", "--allow-empty", "--no-verify", "-m", `New plugin ${id}`]);
   return true;

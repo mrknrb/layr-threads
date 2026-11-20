@@ -23,6 +23,7 @@ import { findForkPoint, readSessionFile } from "./goBack.js";
 import { findSubagent, relayPrompt, subagentEntries, userText } from "./subagents.js";
 import { DEFAULT_PROTECTED, guardHooks, layrPids } from "./guard.js";
 import { threadSettings } from "./threadSettings.js";
+import { publicRow } from "./threadPlugins.js";
 import {
   AsyncQueue,
   errorMessage,
@@ -267,6 +268,8 @@ export class Engine {
       sessionId: randomUUID(),
       sessionStarted: false,
       systemAppend: input.systemAppend || null,
+      // 0.7.0: a thread with a plugin list (threadPlugins.js) has `plugins`; other threads have none.
+      ...(Array.isArray(input.plugins) ? { plugins: input.plugins } : {}),
       allowRules: allowedToolsOf(input.allowedTools),
       queue: [],
       queuePaused: false,
@@ -553,10 +556,15 @@ export class Engine {
       title: meta.title,
       kind: meta.kind,
       // 0.3.2: what a plugin thread works on (thread_start's target), null for project threads.
+      // 0.7.0: a thread with a plugin list: `{kind: "plugins", plugin: null}`, and `plugins` its list.
       target:
         meta.kind === "plugin"
-          ? { kind: meta.extra?.target ?? "plugin", plugin: meta.extra?.pluginId ?? null, place: meta.extra?.place ?? "made" }
+          ? Array.isArray(meta.plugins)
+            ? { kind: "plugins", plugin: null, place: null }
+            : { kind: meta.extra?.target ?? "plugin", plugin: meta.extra?.pluginId ?? null, place: meta.extra?.place ?? "made" }
           : null,
+      plugins: Array.isArray(meta.plugins) ? meta.plugins.map(publicRow) : null,
+      allowAllPlugins: Array.isArray(meta.plugins) ? Boolean(meta.allowAllPlugins) : undefined,
       status: meta.status,
       live: Boolean(live),
       cwd: meta.cwd,
@@ -603,7 +611,8 @@ export class Engine {
     if (p) threads = threads.filter((t) => t.projectId === p.id);
     if (plugin) {
       const of = pluginOf ?? ((t) => (t.kind === "plugin" ? (t.extra?.pluginId ?? null) : null));
-      threads = threads.filter((t) => of(t) === plugin);
+      // 0.7.0: `of` may give several (a thread with a plugin list).
+      threads = threads.filter((t) => [of(t)].flat().includes(plugin));
     }
     if (archived !== "all") threads = threads.filter((t) => Boolean(t.archived) === Boolean(archived));
     if (text) {
@@ -657,6 +666,9 @@ export class Engine {
     // 0.6.0: layr moved the plugin's folder since the last turn (moved.js): Claude is told where it works now.
     const moved = meta.movedNote ?? null;
     if (moved) this.store.updateThread(meta.id, { movedNote: null });
+    // 0.7.0: what the person changed in the thread's plugin list since the last message.
+    const pluginsNote = meta.pluginsNote ?? null;
+    if (pluginsNote) this.store.updateThread(meta.id, { pluginsNote: null });
     // `relay`: the user's message to a subagent, which the main agent passes on (sendToSubagent).
     const message = relay
       ? this.relayMessage(meta, relay, text, savedImages ?? this.saveImages(meta, images))
@@ -679,6 +691,7 @@ export class Engine {
     this.tellLostBackground(meta, message.sdk);
     if (restored) prependNote(message.sdk, restored);
     if (moved) prependNote(message.sdk, moved);
+    if (pluginsNote) prependNote(message.sdk, pluginsNote);
     live.input.push(message.sdk);
     this.touch(meta, { preview: preview(text) });
   }
@@ -788,6 +801,19 @@ export class Engine {
       if (this.canClose(live)) this.closeLive(id, "idle");
     }, IDLE_CLOSE_MS);
     live.idleTimer.unref?.();
+  }
+
+  /** The thread's session needs to start again (new folders or tools: its plugin list changed): when it can. */
+  markRestart(id) {
+    const live = this.lives.get(id);
+    if (!live) return;
+    live.needsRestart = true;
+    if (this.canClose(live)) this.closeLive(id, "its plugins changed");
+  }
+
+  /** Is a turn of that thread running now? */
+  isTurnActive(id) {
+    return Boolean(this.lives.get(id)?.turnActive);
   }
 
   /** No turn and no background work: closing the query loses nothing. */
@@ -1161,6 +1187,12 @@ export class Engine {
    */
   async openLive(meta, { fresh = false, fork = false } = {}) {
     const mcpServers = {};
+    // 0.7.0: a thread with a plugin list gets its own tools, the plugins' folders, the guard and its prompt.
+    const extras = this.sessionExtras ? await this.sessionExtras(meta).catch((error) => {
+      log(`the plugin list of ${meta.id} isn't available:`, errorMessage(error));
+      return null;
+    }) : null;
+    if (extras?.mcpServer) mcpServers.thread = extras.mcpServer;
     try {
       if (this.hub.available) {
         const token = await this.hub.getAgentToken(meta.id, meta.title);
@@ -1219,15 +1251,15 @@ export class Engine {
           : {}),
       permissionMode: meta.permissionMode || "default",
       allowDangerouslySkipPermissions: true,
-      hooks: guardHooks({
+      hooks: mergeHooks(guardHooks({
         settings: () => this.killGuardSettings(),
         protectedPids: layrPids(),
         onBlock: (command) => log(`kill guard: refused in ${meta.id}: ${truncate(command.replace(/\s+/g, " "), 300)}`),
-      }),
+      }), extras?.hooks),
       settingSources: ["user", "project", "local"],
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       ...(meta.allowRules?.length ? { allowedTools: [...meta.allowRules] } : {}),
-      additionalDirectories: [this.store.attachmentsDir(meta.id)],
+      additionalDirectories: [this.store.attachmentsDir(meta.id), ...(extras?.directories ?? [])],
       includePartialMessages: true,
       // Subagents' whole conversations (text and thinking too), shown in their own view (0.3.9).
       forwardSubagentText: true,
@@ -1235,7 +1267,7 @@ export class Engine {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append: LAYR_INSTRUCTIONS + (meta.systemAppend ? `\n\n${meta.systemAppend}` : ""),
+        append: LAYR_INSTRUCTIONS + [meta.systemAppend, extras?.systemAppend].filter(Boolean).map((s) => `\n\n${s}`).join(""),
       },
       env: claudeEnv(),
       stderr: (data) => log(`[${meta.id} stderr] ${String(data).trimEnd()}`),
@@ -1650,6 +1682,10 @@ export class Engine {
     if (kind === "permission" && meta.permissionMode === "bypassPermissions") {
       return Promise.resolve({ behavior: "allow", updatedInput: toolInput, toolUseID: opts?.toolUseID });
     }
+    // 0.7.0: a thread's own tools, and reading the plugins on its list (threadPlugins.js).
+    if (kind === "permission" && this.autoAllow?.(meta, toolName, toolInput)) {
+      return Promise.resolve({ behavior: "allow", updatedInput: toolInput, toolUseID: opts?.toolUseID });
+    }
     // dontAsk (background jobs): nobody answers, so what allowedTools doesn't allow is denied at once.
     if (meta.permissionMode === "dontAsk") {
       const message = `Not allowed here: ${toolName} isn't among this thread's allowed tools, and nobody answers.`;
@@ -1672,15 +1708,35 @@ export class Engine {
       ...(kind === "plan" ? { plan: String(toolInput?.plan ?? "") } : {}),
       canAlwaysAllow: kind === "permission",
     };
+    return this.waitForAnswer(meta, live, entry, opts?.signal, (answer) => {
+      const result = this.permissionResult(meta, live, entry, toolInput, opts, answer);
+      if (result.behavior === "allow" && entry.toolUseId) this.buildTimes?.toolApproved(entry.toolUseId);
+      return result;
+    });
+  }
+
+  /**
+   * 0.7.0: ask the person something that isn't a tool's permission (`entry`: {kind, title, reason, input, ...}, e.g.
+   * a plugin list's "Claude wants to change X"), as an approval card; gives their answer {decision, message}.
+   */
+  askUser(meta, entry, signal) {
+    const live = this.lives.get(meta.id);
+    if (!live) return Promise.reject(new Error("The thread isn't running"));
+    const full = { type: "approval", requestId: newId("r"), toolUseId: null, blockedPath: null, ...entry };
+    return this.waitForAnswer(meta, live, full, signal, (answer) => answer);
+  }
+
+  /** An approval card until it is answered, cancelled or its turn ends; `toResult(answer)` gives what it resolves to. */
+  waitForAnswer(meta, live, entry, signal, toResult) {
+    const { requestId, kind } = entry;
     return new Promise((resolve) => {
       let finished = false;
       const finish = (answer) => {
         if (finished) return;
         finished = true;
         live.approvals.delete(requestId);
-        opts?.signal?.removeEventListener?.("abort", onAbort);
-        const result = this.permissionResult(meta, live, entry, toolInput, opts, answer);
-        if (result.behavior === "allow" && entry.toolUseId) this.buildTimes?.toolApproved(entry.toolUseId);
+        signal?.removeEventListener?.("abort", onAbort);
+        const result = toResult(answer);
         this.addEntry(meta, {
           type: "approval_answer",
           requestId,
@@ -1699,15 +1755,16 @@ export class Engine {
         resolve(result);
       };
       const onAbort = () => finish({ decision: "deny", message: "Cancelled", reason: "cancelled" });
-      if (opts?.signal?.aborted) return onAbort();
-      opts?.signal?.addEventListener?.("abort", onAbort);
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener?.("abort", onAbort);
       live.approvals.set(requestId, { kind, resolve: finish, entry });
       this.addEntry(meta, entry);
       this.store.updateThread(meta.id, { status: "waiting", pendingApprovals: [...(meta.pendingApprovals ?? []), requestId] });
       this.hub.emit("claude:approval", { kind: "request", thread: meta.id, threadTitle: meta.title, projectId: meta.projectId, approval: entry });
       this.emitThread(meta);
-      const asks = { question: "Claude asks you", plan: "Claude has a plan for you", permission: "Claude needs your permission" };
-      this.notifyUser(meta, `${asks[kind]}: ${meta.title}`, "warning");
+      const asks = { question: "Claude asks you", plan: "Claude has a plan for you", permission: "Claude needs your permission",
+        plugin: "Claude wants to change a plugin" };
+      this.notifyUser(meta, `${asks[kind] ?? asks.permission}: ${meta.title}`, "warning");
     });
   }
 
@@ -1979,6 +2036,14 @@ function goneText(meta) {
 }
 
 /** Put a note for Claude in front of a user message. */
+/** The SDK `hooks` of two sources together (each `{event: [{matcher, hooks}]}`). */
+export function mergeHooks(a, b) {
+  if (!b) return a;
+  const out = { ...a };
+  for (const [event, list] of Object.entries(b)) out[event] = [...(out[event] ?? []), ...list];
+  return out;
+}
+
 function prependNote(sdk, note) {
   const content = sdk.message.content;
   if (typeof content === "string") sdk.message.content = note + content;
