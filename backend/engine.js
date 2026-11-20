@@ -15,6 +15,7 @@ import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
 import { claudeDefaults } from "./defaults.js";
 import { CONFIG_RETRY_MS, configEmpty, isConfigBroken, repairEmptyConfig, restoreHint } from "./claudeConfig.js";
+import { clockText, isLimitEnd, LIMIT_NOTE, limitRoom, LONG_PAUSE_MS, pauseUntil } from "./limitPause.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { baseRef as findBaseRef } from "./changes.js";
@@ -37,6 +38,9 @@ import {
 } from "./util.js";
 
 const IDLE_CLOSE_MS = Number(process.env.LAYR_CLAUDE_IDLE_MS || 10 * 60_000);
+/** While threads pause for a usage limit: how often their times are looked at, and the account's usage read. */
+const LIMIT_CHECK_MS = 30_000;
+const LIMIT_READ_MS = 5 * 60_000;
 /** Turns cut off by the backend stopping are picked up again when it starts (LAYR_CLAUDE_RESUME=0: not). */
 const RESUME_ON = process.env.LAYR_CLAUDE_RESUME !== "0";
 /** At most this many times in a row without a turn ending: a turn that brings the engine down isn't run forever. */
@@ -118,6 +122,9 @@ export class Engine {
     };
     /** thread id → the timer of its next try after Claude Code couldn't read its config */
     this.configTimers = new Map();
+    /** The look at threads paused for a usage limit (checkLimitPauses), while any are; when usage was last read. */
+    this.limitTimer = null;
+    this.limitReadAt = 0;
     /** @type {Map<string, Live>} live queries by thread id */
     this.lives = new Map();
     /** thread id → Set of functions called on every status change (thread_wait) */
@@ -145,6 +152,7 @@ export class Engine {
   recover() {
     this.toResume = [];
     this.toRetryConfig = [];
+    this.toPause = [];
     for (const meta of Object.values(this.store.threads)) {
       if (meta.configRetry && meta.status === "starting" && !meta.archived) {
         // It waited to try its turn again (Claude Code couldn't read its config): it goes on waiting.
@@ -152,6 +160,12 @@ export class Engine {
         continue;
       }
       if (meta.configRetry) this.store.updateThread(meta.id, { configRetry: null });
+      if (meta.limitPause && meta.status === "running" && !meta.archived) {
+        // It waited for a usage limit to be over, with no turn running: it goes on waiting (resumeAfterRestart).
+        this.toPause.push(meta.id);
+        continue;
+      }
+      if (meta.limitPause) this.store.updateThread(meta.id, { limitPause: null });
       if (meta.background?.length) this.backgroundLost(meta, meta.background, "the Claude engine restarted");
       const ran = meta.status === "running" || meta.status === "waiting" || meta.status === "starting";
       if (ran || meta.restartResume) {
@@ -192,6 +206,7 @@ export class Engine {
   /** The threads recover() set aside, picked up again: each resumes its session with a note (or its first prompt). */
   async resumeAfterRestart() {
     for (const id of (this.toRetryConfig ?? []).splice(0)) this.scheduleConfigRetry(id, this.config.retryMs[0]);
+    if ((this.toPause ?? []).splice(0).length) this.watchLimitPauses();
     for (const id of (this.toResume ?? []).splice(0)) {
       const meta = this.store.thread(id);
       if (!meta?.restartResume || meta.status !== "starting" || this.lives.has(id)) continue;
@@ -337,7 +352,8 @@ export class Engine {
       this.touch(meta, { preview: preview(text) });
       return { sent: "steer", thread: this.summary(meta) };
     }
-    if (busy || meta.status === "starting") {
+    // 0.9.0: while it pauses for a usage limit, messages queue too (they go after it went on; Send now sends one now).
+    if (busy || meta.status === "starting" || meta.limitPause) {
       const item = { id: newId("q"), text: String(text ?? ""), images: images ?? [], at: nowIso() };
       // Keep images on disk, not in the index.
       item.images = this.saveImages(meta, images);
@@ -442,6 +458,15 @@ export class Engine {
       this.emitThread(meta);
       return { interrupted: true, thread: this.summary(meta) };
     }
+    if (meta.limitPause && !this.lives.get(id)?.turnActive) {
+      this.cancelLimitPause(id);
+      this.store.append(id, { type: "system", text: "Stopped: it won't go on by itself after the usage limit." });
+      this.emitEntry(id, this.lastEntry);
+      this.store.updateThread(id, { status: "interrupted" });
+      if (meta.queue.length) this.store.updateThread(id, { queuePaused: true });
+      this.emitThread(meta);
+      return { interrupted: true, thread: this.summary(meta) };
+    }
     const live = this.lives.get(id);
     if (!live || !live.turnActive) return { interrupted: false, thread: this.summary(meta) };
     live.interruptRequested = true;
@@ -521,6 +546,8 @@ export class Engine {
     const meta = this.requireThread(id);
     if (archived) {
       if (this.cancelConfigRetry(id)) this.store.updateThread(id, { status: "interrupted" });
+      const paused = this.cancelLimitPause(id);
+      if (paused && !this.lives.get(id)?.turnActive) this.store.updateThread(id, { status: "interrupted" });
       const live = this.lives.get(id);
       if (live?.turnActive) void this.interrupt(id).catch(() => {});
       this.closeLive(id, "archived");
@@ -592,6 +619,10 @@ export class Engine {
       subagents: (meta.subagents ?? []).map((s) => (s.status === "running" && !live ? { ...s, status: "stopped" } : s)),
       resuming: Boolean(meta.restartResume),
       retrying: meta.configRetry ? { tries: meta.configTries ?? 1, since: meta.configRetry.at } : null,
+      // 0.9.0: the turn stopped at the usage limit; the thread waits (status running) and goes on by itself at `until`.
+      limitPause: meta.limitPause
+        ? { until: meta.limitPause.until, since: meta.limitPause.since, tries: meta.limitPause.tries ?? 1 }
+        : null,
       queue: meta.queue.map((q) => ({ id: q.id, text: q.text, images: q.images?.length ?? 0, at: q.at,
         ...(q.relay ? { relay: q.relay } : {}) })),
       queuePaused: meta.queuePaused,
@@ -659,6 +690,7 @@ export class Engine {
    */
   async dispatch(meta, { text, images, savedImages, auto, fork = false, again = false, relay = null }) {
     this.cancelConfigRetry(meta.id);
+    this.cancelLimitPause(meta.id);
     // 0.3.12: a note from a worktree made again with Restore worktree, before this turn, is said now.
     const restored = (await this.restoreWorkspace(meta)) ?? meta.restoreNote ?? null;
     if (meta.restoreNote) this.store.updateThread(meta.id, { restoreNote: null });
@@ -725,6 +757,17 @@ export class Engine {
     const interrupted = result.interrupted || (live.interruptRequested && result.subtype !== "success");
     const status = interrupted ? "interrupted" : result.isError || result.subtype !== "success" ? "failed" : "done";
     const error = status === "failed" ? result.error || result.subtype : null;
+    const sawLimit = live.limitHit;
+    live.limitHit = false;
+    if (status === "failed" && isLimitEnd({ sawLimit, error: `${error ?? ""}\n${live.limitText ?? ""}` })) {
+      this.pauseForLimit(meta, live, result, `${live.limitText ?? ""}\n${error ?? ""}`);
+      live.limitText = null;
+      return;
+    }
+    // A limit message in a turn that didn't stop on it after all: said, as before 0.9.0.
+    if (live.limitText) this.addEntry(meta, { type: "error", message: `Claude's answer failed: ${live.limitText}` });
+    live.limitText = null;
+    if (meta.limitPauseCarry) this.store.updateThread(meta.id, { limitPauseCarry: null });
     this.store.append(meta.id, {
       type: "turn_end",
       turn: meta.turns,
@@ -754,6 +797,126 @@ export class Engine {
     this.emitThread(meta);
     this.onTurnEnded?.(meta, status);
     if (!this.dispatchNextQueued(meta)) this.scheduleIdleClose(meta.id);
+  }
+
+  // ---------------------------------------------------------------- usage limits (0.9.0)
+
+  /**
+   * The turn stopped at the account's usage limit: no failure. The turn ends as "paused" (no error, no "failed"
+   * notification), the thread stays `running` with `limitPause` {until, since, tries}, and goes on by itself in the
+   * same session at `until` (limitPause.js says when), or earlier once the account has room again (another account
+   * signed in). Messages sent meanwhile queue; Stop ends the wait. A pause of LONG_PAUSE_MS or more is told once.
+   */
+  pauseForLimit(meta, live, result, text) {
+    live.turnActive = false;
+    const now = Date.now();
+    const { until, known } = pauseUntil({ text, limits: this.account?.limits, now });
+    // Gone on and stopped at the limit again: the same pause, one more try.
+    const before = meta.limitPause ?? meta.limitPauseCarry ?? null;
+    const tries = (before?.tries ?? 0) + 1;
+    log(`thread ${meta.id}: the usage limit stopped its turn; it goes on at ${until}${known ? "" : " (a guess)"}`);
+    this.store.append(meta.id, {
+      type: "turn_end",
+      turn: meta.turns,
+      status: "paused",
+      subtype: "usage_limit",
+      error: null,
+      until,
+      costUsd: result.costUsd ?? null,
+      durationMs: result.durationMs ?? (live.turnStartedAt ? Date.now() - live.turnStartedAt : null),
+      usage: result.usage ?? null,
+      numTurns: result.numTurns ?? null,
+    });
+    this.emitEntry(meta.id, this.lastEntry);
+    const when = clockText(until, now);
+    this.store.append(meta.id, {
+      type: "system",
+      subtype: "limit_pause",
+      until,
+      text: known
+        ? `Paused for the usage limit: it goes on by itself at ${when}.`
+        : `Paused for the usage limit: it tries again by itself at ${when}.`,
+    });
+    this.emitEntry(meta.id, this.lastEntry);
+    this.store.updateThread(meta.id, {
+      status: "running",
+      error: null,
+      costUsd: (meta.costUsd ?? 0) + (result.costUsd ?? 0),
+      pendingApprovals: [],
+      limitPause: { until, since: before?.since ?? new Date(now).toISOString(), at: new Date(now).toISOString(), tries,
+        told: before?.told ?? false },
+      limitPauseCarry: null,
+      ...(meta.restartResumes ? { restartResumes: 0 } : {}),
+    });
+    this.touch(meta);
+    if (Date.parse(until) - now >= LONG_PAUSE_MS && !meta.limitPause.told) {
+      this.store.updateThread(meta.id, { limitPause: { ...meta.limitPause, told: true } });
+      this.notifyUser(meta, `Claude paused for the usage limit until ${when}: ${meta.title}`, "info");
+    }
+    for (const pending of live.approvals.values()) pending.resolve({ decision: "deny", message: "The turn ended" });
+    live.approvals.clear();
+    if (live.closed || (live.needsRestart && this.canClose(live))) this.closeLive(meta.id, "after turn");
+    this.emitThread(meta);
+    this.onTurnEnded?.(meta, "paused");
+    this.scheduleIdleClose(meta.id);
+    this.watchLimitPauses();
+  }
+
+  /** Look at the paused threads now and then, while there are any. */
+  watchLimitPauses() {
+    if (this.limitTimer) return;
+    this.limitTimer = setInterval(() => void this.checkLimitPauses(), LIMIT_CHECK_MS);
+    this.limitTimer.unref?.();
+  }
+
+  /**
+   * Paused threads whose time came, or all of them once the account has room again (read every LIMIT_READ_MS, or now
+   * with `read`: another account signed in), go on. Gives the ids that went on.
+   */
+  async checkLimitPauses({ now = Date.now(), read = false } = {}) {
+    const paused = () => Object.values(this.store.threads).filter((m) => m.limitPause && !m.archived);
+    if (!paused().length) {
+      clearInterval(this.limitTimer);
+      this.limitTimer = null;
+      return [];
+    }
+    if (this.account?.usage && (read || now - this.limitReadAt >= LIMIT_READ_MS)) {
+      this.limitReadAt = now;
+      await this.account.usage({ refresh: read }).catch((error) => log("reading usage:", errorMessage(error)));
+    }
+    const went = [];
+    for (const meta of paused()) {
+      const due = Date.parse(meta.limitPause.until) <= now;
+      const began = meta.limitPause.at ?? meta.limitPause.since;
+      const room = limitRoom(this.account?.limits, this.account?.limitsAt, began, now);
+      if (!due && !room) continue;
+      went.push(meta.id);
+      await this.resumeFromLimit(meta.id, due ? "its time came" : "the account has room again");
+    }
+    return went;
+  }
+
+  /** A paused thread goes on in its session, told what happened. */
+  async resumeFromLimit(id, why) {
+    const meta = this.store.thread(id);
+    if (!meta?.limitPause || meta.archived || this.lives.get(id)?.turnActive) return;
+    log(`thread ${id} goes on after the usage limit (${why})`);
+    const carry = meta.limitPause;
+    try {
+      await this.dispatch(meta, { text: LIMIT_NOTE, auto: "limit" });
+      // Kept for this turn: should it stop at the limit again, it is the same pause (pauseForLimit).
+      this.store.updateThread(id, { limitPauseCarry: carry });
+    } catch (error) {
+      this.fail(meta, error);
+    }
+  }
+
+  /** Stop waiting for the limit to be over: whether it waited. Its status is the caller's. */
+  cancelLimitPause(id) {
+    const meta = this.store.thread(id);
+    if (!meta?.limitPause) return false;
+    this.store.updateThread(id, { limitPause: null });
+    return true;
   }
 
   /**
@@ -1459,6 +1622,7 @@ export class Engine {
         return this.handleResult(meta, live, msg);
       case "rate_limit_event":
         this.account.setRateLimit(msg.rate_limit_info);
+        if (msg.rate_limit_info?.status === "rejected" && live.turnActive) live.limitHit = true;
         this.hub.emit("claude:usage", { limits: this.account.limits });
         return;
       default:
@@ -1582,6 +1746,13 @@ export class Engine {
     const m = msg.message ?? {};
     if (parent && m.model) this.subagentModel(meta, parent, msg.agent_id ?? null, m.model);
     const content = Array.isArray(m.content) ? m.content : [];
+    // 0.9.0: Claude Code's own "You've hit your limit" answer: kept for when the limit ends, not shown (the turn
+    // pauses).
+    if (!parent && msg.error === "rate_limit") {
+      live.limitHit = true;
+      live.limitText = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      return;
+    }
     content.forEach((block, i) => {
       const fallback = `${msg.uuid ?? m.id}:${i}`;
       if (block.type === "text") {
@@ -1964,6 +2135,8 @@ export class Engine {
 
   /** The backend stops: running turns are marked to be picked up again at the next start (recover). */
   async shutdown() {
+    clearInterval(this.limitTimer);
+    this.limitTimer = null;
     for (const id of [...this.lives.keys()]) {
       const meta = this.store.thread(id);
       const live = this.lives.get(id);

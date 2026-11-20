@@ -5,8 +5,8 @@
 // going through the pipeline (pipeline.js).
 import { answerPrefix, hasPicks, pickIn, questionsOf, toggleAgree } from "./boxes.js";
 import {
-  STATUS_LABEL,
   call,
+  clock,
   defaultModelName,
   effortOptions,
   fillSelect,
@@ -21,6 +21,7 @@ import {
   readImage,
   ready,
   relTime,
+  statusLabel,
   tokens,
 } from "./common.js";
 import { createDraftStore } from "./drafts.js";
@@ -408,6 +409,7 @@ function drawEntry(e, into) {
         return kept(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
       }
       if (e.subtype === "saved" && e.commit) return kept(savedLine(e));
+      if (e.subtype === "limit_pause") return kept(h("div", { class: "sys" }, icon("clock", 12), e.text));
       return kept(h("div", { class: `sys${e.subtype === "background_lost" ? " warn" : ""}` }, e.text));
     case "error":
       return kept(e.retry ? retryBox(e) : h("div", { class: "error-box" }, e.message));
@@ -741,6 +743,11 @@ function userBubble(e) {
     return h("div", { class: "user-wrap" }, h("div", { class: "msg-user auto", title: e.text },
       icon("refresh", 13), "Picked up again after the Claude engine restarted"), when(e.ts));
   }
+  // 0.9.0: sent by layr, not you: the turn the usage limit stopped goes on.
+  if (e.auto === "limit") {
+    return h("div", { class: "user-wrap" }, h("div", { class: "msg-user auto", title: e.text },
+      icon("refresh", 13), "Went on after the usage limit"), when(e.ts));
+  }
   const el = h("div", { class: `msg-user${e.steer ? " steer" : ""}` });
   if (e.images?.length) {
     const imgs = h("div", { class: "imgs" });
@@ -1009,15 +1016,18 @@ function todoList(todos) {
       h("span", {}, t.status === "in_progress" && t.activeForm ? t.activeForm : t.content))));
 }
 
+const TURN_END_ICON = { done: "check", failed: "x", paused: "clock" };
+
 function turnEnd(e) {
   const bits = [];
   if (e.status === "done") bits.push("Done");
   else if (e.status === "interrupted") bits.push("Stopped");
+  else if (e.status === "paused") bits.push("Paused for the usage limit");
   else bits.push(`Failed${e.error ? `: ${e.error}` : ""}`);
   if (e.durationMs) bits.push(duration(e.durationMs));
   if (typeof e.costUsd === "number" && e.costUsd > 0) bits.push(money(e.costUsd));
   if (e.usage?.outputTokens) bits.push(`${tokens(e.usage.inputTokens + e.usage.cacheReadTokens + e.usage.cacheWriteTokens)} in · ${tokens(e.usage.outputTokens)} out`);
-  return h("div", { class: `turn-end ${e.status}` }, icon(e.status === "done" ? "check" : e.status === "failed" ? "x" : "stop", 13), bits.join(" · "));
+  return h("div", { class: `turn-end ${e.status}` }, icon(TURN_END_ICON[e.status] ?? "stop", 13), bits.join(" · "));
 }
 
 function duration(ms) {
@@ -1227,7 +1237,8 @@ function setThread(t) {
   }
   $("status-dot").className = `dot ${t.status}`;
   document.body.classList.toggle("busy", isBusy(t));
-  $("status-label").textContent = `${STATUS_LABEL[t.status] ?? t.status}${t.archived ? " · archived" : ""}`;
+  $("status-dot").classList.toggle("paused", Boolean(t.limitPause));
+  $("status-label").textContent = `${statusLabel(t)}${t.archived ? " · archived" : ""}`;
   const ws = t.workspace ?? {};
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
@@ -1289,7 +1300,7 @@ function renderWorking() {
   const isBusy = busy(t);
   const el = $("working");
   el.hidden = !isBusy;
-  el.classList.toggle("waiting", t?.status === "waiting");
+  el.classList.toggle("waiting", t?.status === "waiting" || Boolean(t?.limitPause));
   $("stop").hidden = !isBusy;
   $("steer").hidden = !isBusy || !input.value.trim() || Boolean(state.task);
   // 🌙 When away needs the pipeline (state.task is undefined without it). A pipeline that gives the task's toggles
@@ -1312,7 +1323,8 @@ function renderWorking() {
   const tick = () => {
     const secs = state.turnStartedAt ? Math.round((Date.now() - state.turnStartedAt) / 1000) : null;
     $("working-text").textContent =
-      t.status === "waiting" ? `Waiting for your answer${state.sub ? "" : " above"}`
+      t.limitPause ? `Paused for the usage limit · goes on at ${clock(t.limitPause.until)}`
+      : t.status === "waiting" ? `Waiting for your answer${state.sub ? "" : " above"}`
         : `${state.sub ? "Main agent working" : "Working"}${secs != null ? ` · ${secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}` : "…"}`;
   };
   tick();

@@ -107,6 +107,7 @@ a { color: var(--accent); }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--fg-dim); }
 .dot.running, .dot.starting { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.dot.running.paused { background: var(--warn); animation: none; }
 .dot.waiting { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
 .dot.done { background: var(--ok); }
 .dot.failed { background: var(--danger); }

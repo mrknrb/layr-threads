@@ -105,6 +105,7 @@ const ICONS = {
   open: '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
   puzzle: '<path d="M10 3h4v3a2 2 0 1 0 4 0V3h0a3 3 0 0 1 3 3v4h-3a2 2 0 1 0 0 4h3v4a3 3 0 0 1-3 3h-4v-3a2 2 0 1 0-4 0v3H6a3 3 0 0 1-3-3v-4h3a2 2 0 1 0 0-4H3V6a3 3 0 0 1 3-3z"/>',
   box: '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
@@ -120,6 +121,21 @@ export const STATUS_LABEL = {
   interrupted: "Stopped",
   idle: "Idle",
 };
+
+/** "16:00", or "Sat 21 Nov 16:00" when not today. */
+export function clock(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "later";
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+}
+
+/** A thread's status in words; 0.9.0: one paused for the usage limit says until when. */
+export function statusLabel(t) {
+  if (t?.limitPause) return `Paused · ${clock(t.limitPause.until)}`;
+  return STATUS_LABEL[t?.status] ?? t?.status ?? "";
+}
 
 export const PERMISSION_LABEL = {
   default: "Ask before changes",
