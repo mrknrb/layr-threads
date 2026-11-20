@@ -1518,6 +1518,8 @@ $("head").addEventListener("contextmenu", (ev) => {
 // ------------------------------------------------------------------ the pipeline task
 
 let taskTimer = null;
+/** The saved draft is in the text box (before that, `boxSent` waits: the box would look empty). */
+let draftReady = false;
 async function refreshTask() {
   const task = await threadTask(state.id);
   state.task = task;
@@ -1526,9 +1528,15 @@ async function refreshTask() {
     input.value = input.value.trim() ? `${input.value.replace(/\s+$/, "")}\n\n${task.unsent}` : task.unsent;
     autosize();
     notify("When away is off: your unsent message is back in the text box", "info");
+    saveDraft();
     void pipelineCall("thread_action", { thread: state.id, action: "unsent_taken" }).catch(() => {});
   }
-  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask(), { composerText, onSent: composerSent });
+  // Away sent what waited from the text box: the box empties, unless it holds something typed after that.
+  if (typeof task?.boxSent === "string" && draftReady) {
+    if (composerText().trim() === task.boxSent.trim()) clearBox();
+    void pipelineCall("thread_action", { thread: state.id, action: "box_sent_taken" }).catch(() => {});
+  }
+  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask(), { composerText, onSent: composerSent, syncBox, onBoxed: boxed });
   renderWorking();
   clearTimeout(taskTimer);
   // While there is a pipeline, look again every 10 s (its events may not reach this panel).
@@ -1836,6 +1844,56 @@ function picksArrived(e) {
   renderLatest();
 }
 
+// ------------------------------------------------------------------ the text box's waiting item (🌙)
+// With the task's When away on, Send and Approve leave the text in the box: what waits for Away is the box itself, kept
+// up to date here (pipeline thread_action box_text), sent as it is when Away comes (then `boxSent` empties the box).
+
+let boxTimer = null;
+/** What the images last sent to the box's waiting item were (null: not sent from this panel yet). */
+let boxImages = null;
+const imagesKey = () => state.attachments.map((a) => `${a.mediaType}:${a.data.length}:${a.data.slice(-24)}`).join("|");
+
+/** Bring the box's waiting item up to date with the box (`now`: at once, else after a pause in typing). */
+function syncBox(now = false) {
+  clearTimeout(boxTimer);
+  if (!state.task?.box || state.sub) return Promise.resolve();
+  const go = async () => {
+    const key = imagesKey();
+    const images = key !== boxImages ? state.attachments.map(({ mediaType, data }) => ({ mediaType, data })) : undefined;
+    try {
+      const r = await pipelineCall("thread_action", { thread: state.id, action: "box_text", text: composerText(), ...(images ? { images } : {}) });
+      if (images) boxImages = key;
+      if (r?.boxWaits === false) void refreshTask();
+    } catch (error) {
+      notify(`Pipeline: ${error.message}`, "error");
+    }
+  };
+  if (now) return go();
+  boxTimer = setTimeout(go, 400);
+  return Promise.resolve();
+}
+
+/** Send or Approve left the text in the box: it waits for Away (`images`: they went with it). */
+function boxed({ start = false, images = false } = {}) {
+  boxImages = images ? imagesKey() : null;
+  notify(start ? "Approved: it starts when you go Away, with what the text box holds then (Unapprove takes it back)"
+    : "It waits for Away, as the text box holds it then (Unsend takes it back)", "success");
+  // Approve takes no pictures along: the box's go to its item now.
+  void refreshTask().then(() => !images && state.attachments.length && syncBox(true));
+}
+
+/** What Away sent from the box is in the thread: the box empties. */
+function clearBox() {
+  input.value = "";
+  state.attachments = [];
+  state.picks = { replyId: state.picks.replyId, picked: {} };
+  renderAttachments();
+  renderLatest();
+  renderSlash();
+  autosize();
+  void drafts.clear(state.id);
+}
+
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
 async function send(mode, { away = false } = {}) {
   const typed = input.value;
@@ -1859,9 +1917,15 @@ async function send(mode, { away = false } = {}) {
       notify("It waits in the pipeline's Ready until you go Away", "success");
       void refreshTask();
     } else if (state.task) {
-      // The pipeline holds it back for Away when the task's 🌙 is on.
+      // The box waits for Away already: what it holds then goes; Send now (the strip) sends it at once.
+      if (state.task.box) {
+        await syncBox(true);
+        return notify("It waits for Away already, as the text box holds it then (Send now sends it now)", "info");
+      }
+      // The pipeline holds it back for Away when the task's 🌙 is on: then the text stays in the box (`boxWaits`).
       const waits = awayOn() && !state.task.planning;
-      await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
+      const sent = await pipelineCall("send", { number: state.task.number, text, box: true, ...(images.length ? { images } : {}) });
+      if (sent?.boxWaits) return boxed({ images: true });
       heldBack = waits;
       if (waits) notify("It waits in the pipeline's Ready until you go Away", "success");
       if (waits) void refreshTask();
@@ -2227,6 +2291,7 @@ function saveDraft() {
       : null,
     answers: state.answers,
   });
+  void syncBox();
 }
 
 async function loadDraft() {
@@ -2271,6 +2336,7 @@ call("models_list")
   })
   .catch(() => {});
 await loadDraft();
+draftReady = true;
 // The draft's picks belong to a reply: kept only if that reply is still the latest (setLatest drops them otherwise).
 const draftPicks = state.picks;
 state.picks = { replyId: null, picked: {} };

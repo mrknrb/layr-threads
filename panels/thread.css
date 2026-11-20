@@ -160,7 +160,7 @@ button.commit-chip:hover { background: var(--bg-3); color: var(--fg); }
 #queue .q-item { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 8px; border-radius: 6px; }
 #queue .q-item:hover { background: var(--bg-3); }
 #queue .q-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#composer { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); padding: 8px 8px 6px 10px;
+#composer { position: relative; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); padding: 8px 8px 6px 10px;
   transition: border-color 0.12s; }
 #composer:focus-within { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); }
 #composer.drag { border-color: var(--accent); border-style: dashed; }
@@ -330,6 +330,7 @@ a.layr-link { text-decoration-style: dashed; }
 #task .chip.warn { color: var(--warn); border-color: var(--warn); }
 #task .chip.danger { color: var(--danger); border-color: var(--danger); }
 #task .task-note { color: var(--fg-dim); }
+#task .task-box { display: flex; align-items: center; gap: 6px; color: var(--accent); }
 #task .task-landing { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
 #task .task-landing.bad { color: var(--danger); }
 #task .task-brief > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
@@ -344,7 +345,6 @@ a.layr-link { text-decoration-style: dashed; }
 .confirm-text { font-weight: 600; }
 
 /* Composer: the answers sent first, the / menu */
-#composer { position: relative; }
 #prefix { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; font-size: 12px; }
 #prefix .label { color: var(--fg-dim); }
 #prefix .text { background: color-mix(in srgb, #ffa94d 18%, transparent); border-radius: 6px; padding: 1px 7px; }

@@ -68,6 +68,12 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
       h("span", { class: "task-title" }, inlineMarkdown(task.title ?? ""))),
   ];
   if (note) parts.push(h("div", { class: "task-note" }, inlineMarkdown(note)));
+  // What waits from the text box is still in it, and goes as the box holds it when Away comes.
+  if (task.box) {
+    parts.push(h("div", { class: "task-box" }, icon("send", 13), task.box.start
+      ? "Approved · waits for Away: Start the work goes with what the text box holds then. You can still edit it."
+      : "Your message waits for Away: what the text box holds then goes. You can still edit it."));
+  }
   if (task.landing?.state) {
     const bad = Boolean(task.landing.problem);
     parts.push(h("div", { class: `task-landing${bad ? " bad" : ""}` }, icon(bad ? "x" : "branch", 13),
@@ -98,9 +104,17 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
       try {
         // "start" is Land now too (a Land waiting for Away): only Send now takes the text box along.
         const sendNow = btn.id === "start" && btn.label === "Send now";
-        const text = btn.id === "approve" || sendNow ? composer.composerText?.() ?? "" : "";
-        if (btn.id === "approve" && text) await pipelineCall("thread_action", { thread: threadId, action: btn.id, text });
-        else await pipelineCall("thread_action", { thread: threadId, action: btn.id });
+        // What waits from the text box goes as the box holds it now: nothing is sent after it.
+        if (sendNow && task.box) await composer.syncBox?.(true);
+        const text = btn.id === "approve" || (sendNow && !task.box) ? composer.composerText?.() ?? "" : "";
+        if (btn.id === "approve") {
+          // `box`: if it waits for Away, the text stays in the box (`boxWaits`) and goes as the box holds it then.
+          const r = await pipelineCall("thread_action", { thread: threadId, action: btn.id, ...(text ? { text } : {}), box: true });
+          if (r?.boxWaits) {
+            composer.onBoxed?.({ start: true });
+            return;
+          }
+        } else await pipelineCall("thread_action", { thread: threadId, action: btn.id });
         // Send now: what waited goes first (When away is off now), then what was picked or typed after it.
         if (sendNow && text && task.number != null) await pipelineCall("send", { number: task.number, text });
         if (text) composer.onSent?.();
