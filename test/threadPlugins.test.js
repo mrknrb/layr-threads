@@ -20,7 +20,7 @@ delete process.env.LAYR_CLAUDE_PLUGINS_DIR;
 const tp = await import("../backend/threadPlugins.js");
 const { git, outsideGit } = await import("../backend/git.js");
 const { autoCommit, initPluginRepo } = await import("../backend/autoCommit.js");
-const { parseMentions, guardDecision, WriteLocks, ThreadPlugins, publicRow, pluginsPrompt } = tp;
+const { parseMentions, guardDecision, WriteLocks, ThreadPlugins, publicRow, pluginsPrompt, PluginRestarts, releasedVersion } = tp;
 const plainGit = (dir, ...args) => {
   const env = { ...process.env };
   delete env.GIT_DIR;
@@ -144,6 +144,7 @@ const hub = {
       return { path: store1Mine, branch: "mine" };
     }
     if (name === "layr__plugin_history") return { commits: history, more: false };
+    if (name === "layr__plugin_switch" || name === "layr__packages_link") return { id: args.plugin ?? null };
     if (name === "layr__plugin_undo") {
       if (args.commit === "bad") throw new Error("later changes touch the same lines");
       return { commit: `undo-${args.commit}` };
@@ -248,6 +249,55 @@ check(publicRow(t1.plugins[0]).folder && /none yet/.test(pluginsPrompt({ rows: [
   "rows and the prompt of an empty list");
 const found = await plugins.find("store");
 check(found[0]?.id === "store1" && found[0].sources.length === 1, "plugin_find", found);
+
+// ------------------------------------------------------------------ a thread in a project (0.11.0)
+const project = path.join(tmp, "layr_flutter");
+mkdirSync(project, { recursive: true });
+threads.p1 = { id: "p1", kind: "thread", cwd: project, plugins: [], permissionMode: "default" };
+const p1 = threads.p1;
+check(ThreadPlugins.inProject(p1) && !ThreadPlugins.inProject({ kind: "plugin", plugins: [] }) &&
+  !ThreadPlugins.inProject({ kind: "thread" }), "a project thread with a list is one in a project");
+const pctx = { project: true, cwd: project, rows: [], home, packages, installed: [], allowed: [project] };
+check(guardDecision("Edit", { file_path: path.join(project, "core", "src", "lib.rs") }, pctx) === null,
+  "the project's own files can be changed");
+check(guardDecision("Bash", { command: "git --git-dir=.git log" }, pctx) === null &&
+  guardDecision("Bash", { command: `git --git-dir=${path.join(packages, "alpha", "history.git")} log` }, pctx) !== null &&
+  guardDecision("Bash", { command: `git --work-tree ${mineA} status` }, pctx) !== null,
+  "git in the project is fine, git aimed at layr's home isn't");
+check(guardDecision("Edit", { file_path: path.join(mineA, "x.js") }, pctx) !== null, "a plugin not on the list is refused");
+const pextras = await plugins.sessionExtras(p1);
+check(/Installed layr plugins in this thread/.test(pextras.systemAppend) && /plugin_hold/.test(pextras.systemAppend),
+  "its prompt says the plugins run in the app, and how to hold a change back");
+const ch = await plugins.requestChange(p1, { plugin: "store1", why: "needs a new hub tool" });
+check(ch.allowed && p1.plugins[0].base === "1.0.0", "a store plugin to change remembers the version it came as", p1.plugins[0]);
+calls.length = 0;
+const held = await plugins.hold(p1, "store1", "calls layr__new_tool");
+check(held.held?.version === "1.0.0" && calls.some((c) => c.name === "layr__plugin_switch" && c.args.version === "1.0.0"),
+  "holding back: the app runs the released version again", held);
+check(pluginsPrompt({ rows: p1.plugins, workDir: project, project: true }).includes("held back (the app runs 1.0.0)"),
+  "the prompt says it is held back", p1.plugins[0]);
+calls.length = 0;
+const freed = await plugins.release(p1, "store1");
+check(freed.held === null && calls.some((c) => c.name === "layr__plugin_switch" && c.args.mine === true) &&
+  /switched on the held-back changes/.test(p1.pluginsNote ?? ""), "switched on again: the app runs your changes", calls);
+let holdError = null;
+await plugins.hold(p1, "alpha", "x").catch((e) => { holdError = e.message; });
+check(/isn't a plugin this thread may change/.test(holdError ?? ""), "only a plugin it may change is held", holdError);
+check(releasedVersion({ sources: [{ versions: [] }, { versions: ["2.0.0", "1.0.0"] }] }) === "2.0.0" &&
+  releasedVersion({}) === null, "the newest released version");
+
+// Restarts: claude and pipeline wait until no turn runs, claude last.
+let busy = true;
+const ran = [];
+const restarts = new PluginRestarts({ busy: () => busy, everyMs: 60_000 });
+const job = (id) => ({ id, run: async () => { ran.push(id); } });
+const first = await restarts.request([job("claude"), job("wiki"), job("pipeline")]);
+check(JSON.stringify(ran) === JSON.stringify(["wiki"]) && first.later.length === 2, "others restart at once", { ran, first });
+check(!(await restarts.tick()) && ran.length === 1, "not while a turn runs");
+busy = false;
+check(await restarts.tick() && JSON.stringify(ran) === JSON.stringify(["wiki", "pipeline", "claude"]),
+  "then pipeline, and claude last", ran);
+restarts.stop();
 
 rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

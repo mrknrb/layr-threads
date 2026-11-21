@@ -1244,8 +1244,9 @@ function setThread(t) {
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
   wsEl.title = ws.path ?? "";
   // A thread on a plugin or an extension (0.3.2) says which, instead of the folder; one with a plugin list (0.7.0)
-  // how many it has (the list is the bar under the header).
-  if (Array.isArray(t.plugins)) {
+  // how many it has (the list is the bar under the header). A thread in a project with a plugin list (0.11.0) keeps
+  // its folder and branch here.
+  if (t.target?.kind === "plugins") {
     const n = t.plugins.length;
     wsEl.replaceChildren(icon("box", 12), n ? `${n} plugin${n === 1 ? "" : "s"}` : "no plugin yet");
     wsEl.title = `The plugins this thread may read and change · its own folder ${ws.path ?? ""}`;
@@ -2042,10 +2043,13 @@ function renderPlugins(t) {
   el.hidden = false;
   const chips = t.plugins.map((p) => {
     const [label, title] = MODE_LABEL[p.mode] ?? MODE_LABEL.read;
-    const chip = h("button", { class: `plugin-chip ${p.mode}`,
-      title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}` },
+    const heldTitle = p.held ? `
+Held back: the app runs ${p.held.version} until you switch these changes on` +
+      `${p.held.why ? ` (${p.held.why})` : ""}` : "";
+    const chip = h("button", { class: `plugin-chip ${p.mode}${p.held ? " held" : ""}`,
+      title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}${heldTitle}` },
     icon(p.extension ? "puzzle" : "box", 12), h("span", { class: "name" }, p.name),
-    p.version ? h("span", { class: "ver" }, p.version) : null, h("span", { class: "mode" }, label));
+    p.version ? h("span", { class: "ver" }, p.version) : null, h("span", { class: "mode" }, p.held ? "held back" : label));
     chip.addEventListener("click", (ev) => pluginMenu(ev, p));
     chip.addEventListener("contextmenu", (ev) => pluginMenu(ev, p));
     return chip;
@@ -2086,6 +2090,8 @@ function pluginMenu(ev, p) {
     p.mode === "read"
       ? { label: "Let Claude change it", icon: "edit", run: () => setPlugin({ plugin: p.id, mode: "change" }) }
       : { label: "Read only", icon: "visibility", run: () => setPlugin({ plugin: p.id, mode: "read" }) },
+    p.held ? { label: `Run these changes now (the app runs ${p.held.version})`, icon: "refresh",
+      run: () => setPlugin({ plugin: p.id, held: false }) } : null,
     p.mode === "change" ? { label: "Take back this thread's changes", icon: "undo", run: () => takeBack(p) } : null,
     p.place !== "inside" ? { label: "History and undo", icon: "history", run: () => openLink(pluginPageLink(p.id, "history")) } : null,
     p.extension ? { label: "Reload the extension", icon: "refresh", run: () => layr.tools.call("extension_reload", { plugin: p.id },

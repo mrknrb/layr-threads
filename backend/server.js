@@ -18,7 +18,7 @@ import { Hub } from "./hub.js";
 import { applyMoves } from "./moved.js";
 import { linkIfReady, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
-import { parseMentions, publicRow, ThreadPlugins } from "./threadPlugins.js";
+import { parseMentions, PluginRestarts, publicRow, ThreadPlugins } from "./threadPlugins.js";
 import { isPluginsRoot, listTargets, readManifest, TARGET_KINDS } from "./targets.js";
 import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
@@ -56,12 +56,17 @@ const engine = new Engine({ store, hub, account, buildTimes });
 const plugins = new ThreadPlugins({ engine, hub, store, dataDir });
 engine.sessionExtras = (meta) => (ThreadPlugins.has(meta) ? plugins.sessionExtras(meta) : Promise.resolve(null));
 engine.autoAllow = (meta, toolName, input) => plugins.autoAllow(meta, toolName, input);
+// 0.11.0: plugins a turn changed are restarted; claude and pipeline only once no thread has a turn running.
+const restarts = new PluginRestarts({
+  busy: () => [...engine.lives.values()].some((live) => live.turnActive),
+});
 
 // After each turn that ends well: what it changed in a plugin's own repository is committed (autoCommit.js), then
 // threads on a plugin link a plugin they made into layr and reload its Chrome extension, if it brings one.
 engine.onTurnEnded = (meta, status) => {
   // The plugins this turn held for writing are free again (one thread writes a plugin at a time).
   plugins.locks.release(meta.id);
+  void restarts.tick();
   if (status !== "done") return;
   if (ThreadPlugins.has(meta)) {
     void commitPlugins(meta).then((saved) => afterPluginsTurn(meta, saved));
@@ -99,10 +104,28 @@ async function commitPlugins(meta) {
  * and those it changed that bring a Chrome extension are reloaded. */
 async function afterPluginsTurn(meta, saved) {
   const changed = new Set(saved.filter((s) => s.done?.commit).map((s) => s.row.id));
-  for (const row of meta.plugins ?? []) {
+  const jobs = [];
+  for (const row of engine.requireThread(meta.id).plugins ?? []) {
     if (row.mode !== "change") continue;
-    if (row.place === "made" && (changed.has(row.id) || (row.isNew && !row.linked))) await linkRow(meta, row);
-    if (changed.has(row.id) && readManifest(row.folder)?.extension) await reloadExtension(meta, row.id);
+    // 0.11.0: a change held back (it needs a core the app doesn't have) isn't what the app runs: nothing to restart.
+    if (row.held) continue;
+    const manifest = changed.has(row.id) ? readManifest(row.folder) : null;
+    if (row.place === "made" && (changed.has(row.id) || (row.isNew && !row.linked))) {
+      // A plugin of your own is linked again (manifest changes show; its backend restarts with it).
+      jobs.push({ id: row.id, run: () => linkRow(meta, row) });
+    } else if (manifest?.backend) {
+      jobs.push({ id: row.id, run: () => hub.call("layr__plugin_restart", { plugin: row.id }) });
+    }
+    if (manifest?.extension) await reloadExtension(meta, row.id);
+  }
+  if (!jobs.length || !hub.available) return;
+  const { later } = await restarts.request(jobs);
+  if (later.length) {
+    const one = later.length === 1;
+    const text = `${later.join(" and ")} restart${one ? "s" : ""} with the changes once no thread is running ` +
+      `(${one ? "it runs" : "they run"} the threads)`;
+    const entry = store.append(meta.id, { type: "system", text });
+    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
   }
 }
 
@@ -230,7 +253,7 @@ function linkPluginFolder(meta) {
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.7.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "claude", version: "0.11.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -363,10 +386,18 @@ tool(
       .describe("Tools allowed without asking (Claude Code rules, e.g. Read, mcp__layr__pipeline__propose); with dontAsk the rest are denied"),
     title: z.string().optional(),
     images: images.optional(),
+    plugins: z
+      .array(z.object({ plugin: z.string(), version: z.string().optional(), source: z.string().optional(),
+        change: z.boolean().optional().describe("Allowed to change (default: read only)") }))
+      .optional()
+      .describe("With project (0.11.0): the thread also gets a plugin list, of plugins installed in layr it may read " +
+        "and change beside the project (an empty list: none yet, mentions and Claude add them); plugins the prompt " +
+        "mentions (@id) go on it to read"),
   },
   async (a) => {
     if (a.target) return startOnTarget(a);
     if (!a.project) throw new Error("Which project? Give project (projects_list), or a target (targets_list)");
+    if (Array.isArray(a.plugins)) return startInProject(a);
     return engine.startThread(a).then((thread) => ({ thread }));
   },
 );
@@ -419,6 +450,26 @@ async function startOnTarget(a) {
   });
   return { thread, folder: main?.folder ?? workDir, pluginId: main?.id ?? null, place: main?.place ?? null, isNew,
     plugins: rows.filter(Boolean).map(publicRow) };
+}
+
+/**
+ * thread_start in a project with a plugin list (0.11.0): the project is the thread's folder as always, and the plugins
+ * installed in layr it may read and change come beside it (`plugins`, and the ones the prompt mentions, to read).
+ */
+async function startInProject(a) {
+  const rows = [];
+  for (const p of a.plugins) {
+    if (rows.some((r) => r.id === p.plugin)) continue;
+    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read" }));
+  }
+  const known = new Set((await plugins.catalog().catch(() => [])).map((t) => t.id));
+  for (const m of parseMentions(a.prompt)) {
+    if (!known.has(m.id) || rows.some((r) => r.id === m.id)) continue;
+    const row = await plugins.resolve({ plugin: m.id, version: m.version ?? undefined, mode: "read" }).catch(() => null);
+    if (row) rows.push(row);
+  }
+  const thread = await engine.startThread({ ...a, plugins: rows });
+  return { thread, plugins: rows.map(publicRow) };
 }
 
 tool(
@@ -671,7 +722,7 @@ const pluginId = z.string().describe("An installed plugin's id (targets_list)");
 tool(
   "thread_plugins",
   "A thread's plugin list (threads that change plugins): {plugins: [{id, name, mode: read | change, version, source, " +
-    "place, folder, extension, isNew, by}], allowAll}; null for other threads.",
+    "place, folder, extension, isNew, by, held}], allowAll}; null for other threads.",
   { thread: threadId },
   (a) => {
     const meta = engine.requireThread(a.thread);
@@ -704,16 +755,19 @@ tool(
 tool(
   "thread_plugin_set",
   "Change a plugin on a thread's list: mode read or change, or remove: true to take it off. allowAll: true lets Claude " +
-    "change any plugin it asks for in this thread without asking (false asks again).",
+    "change any plugin it asks for in this thread without asking (false asks again). held: false runs the plugin's " +
+    "held-back changes (a thread in a project).",
   {
     thread: threadId,
     plugin: pluginId.optional(),
     mode: z.enum(["read", "change"]).optional(),
     remove: z.boolean().optional(),
     allowAll: z.boolean().optional(),
+    held: z.literal(false).optional().describe("false: the app runs the plugin's held-back changes now (0.11.0)"),
   },
   async (a) => {
     const meta = engine.requireThread(a.thread);
+    if (a.plugin && a.held === false) await plugins.release(meta, a.plugin);
     if (a.allowAll !== undefined) {
       store.updateThread(meta.id, { allowAllPlugins: a.allowAll });
       engine.emitThread(meta);
