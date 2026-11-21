@@ -102,7 +102,11 @@ export function guardDecision(toolName, input, ctx) {
   if (SHELL_TOOLS.has(toolName)) {
     const command = String(input?.command ?? "");
     const text = command.replace(/\\\\/g, "/").replace(/\\/g, "/").toLowerCase();
-    if (/history\.git|repo\.git|\bgit_dir\b|\bgit_work_tree\b|--git-dir|--work-tree/.test(text)) {
+    // A thread in a project (0.11.0) runs git in its own repository: there only git aimed at layr's home is refused.
+    const aimsAtPlugins = !ctx.project || (ctx.packages && text.includes(pathText(ctx.packages))) ||
+      rows.some((r) => r.folder && text.includes(pathText(r.folder)));
+    if (/history\.git|repo\.git/.test(text) ||
+      (aimsAtPlugins && /\bgit_dir\b|\bgit_work_tree\b|--git-dir|--work-tree/.test(text))) {
       return "layr keeps the plugins' history itself (a commit after every turn): don't run git on it.";
     }
     const writable = rows.filter((r) => r.mode === "change");
@@ -137,15 +141,19 @@ export function publicRow(r) {
     id: r.id, name: r.name, mode: r.mode, version: r.version ?? null, source: r.source ?? null, place: r.place ?? null,
     folder: r.folder ?? null, extension: Boolean(r.extension), isNew: Boolean(r.isNew), by: r.by ?? "you",
     at: r.at ?? null,
+    // 0.11.0: a change held back until the app has the core it needs (Plugins in a project thread).
+    held: r.held ? { version: r.held.version ?? null, why: r.held.why ?? null, at: r.held.at ?? null } : null,
   };
 }
 
 /** The part of the system prompt that says how a thread with a plugin list works. */
-export function pluginsPrompt({ rows, workDir, hubUrl }) {
+export function pluginsPrompt({ rows, workDir, hubUrl, project = false }) {
   const list = rows.length
     ? rows.map((r) => `- ${r.name} (id "${r.id}"${r.version ? `, version ${r.version}` : ""}): ` +
-      `${r.mode === "change" ? "you may change it" : "read only"}; folder ${r.folder}`).join("\n")
+      `${r.mode === "change" ? "you may change it" : "read only"}${r.held ? `, held back (the app runs ${r.held.version})` : ""}` +
+      `; folder ${r.folder}`).join("\n")
     : "- (none yet)";
+  if (project) return projectPluginsPrompt({ list, workDir });
   return `# Changing layr plugins
 layr is an app that is an empty frame of panels where every feature is a plugin. In this thread you change the
 person's layr plugins. The person you are helping may not program at all: talk in plain words, make decisions
@@ -182,6 +190,40 @@ Say in two or three plain sentences what changed in which plugin and how to see 
 again). A new plugin is linked into layr by itself when your turn ends.`;
 }
 
+/**
+ * The prompt of a thread in a project that also changes installed plugins (0.11.0): the project is its folder (a
+ * worktree of layr's source, as a rule), the plugins live in the app (layr's home) and run there.
+ */
+function projectPluginsPrompt({ list, workDir }) {
+  return `# Installed layr plugins in this thread
+Besides this project (${workDir}), this thread can change the layr plugins installed in the layr app the person runs.
+Their source is not in this folder: each plugin's files are its folder in layr's home, which the app runs from, so a
+plugin change goes live in the person's app when your turn ends. The project's own files work as always.
+
+## Which plugins: the thread's list
+${list}
+
+- The person adds a plugin by mentioning it (\`@id\`): you may read it. Read one that isn't on the list with
+  \`mcp__${THREAD_SERVER}__plugin_add\` { "plugin": "<id>" }; \`mcp__${THREAD_SERVER}__plugin_find\` finds the one meant.
+- To change one: \`mcp__${THREAD_SERVER}__plugin_change\` { "plugin": "<id>", "why": "<in plain words>" }, and wait for the
+  answer. A new plugin: { "new": { "name": "..." } }. Write plugins only in their folders on the list, never into this
+  project's \`plugins/\` folder (a plugin there that has moved to its own repository is gone from it).
+- A plugin's history is layr's: don't run git in a plugin's folder. After each turn layr saves each changed plugin as
+  a version (the person can take back everything this thread changed), and restarts the ones with a backend (the
+  claude and pipeline plugins only once no thread is running, as they run the threads).
+
+## A plugin change that needs this project's core
+The app runs the published layr core, not this worktree's. When a plugin change calls something only this project's
+unpublished core has (a new JSON-RPC method, hub tool, manifest field or panel SDK function), the person's app would
+break. Then, right after changing it, call \`mcp__${THREAD_SERVER}__plugin_hold\` { "plugin": "<id>", "why": "<what it
+needs>" }: the app goes on running the plugin's released version, your changes stay saved in its folder, and the
+person switches them on once the app version with the new core is installed. A change that works with the published
+core (or checks for the new ability first) needs no hold.
+
+## When you are done
+Say what changed in this project and in which plugins, and which plugin changes are held back.`;
+}
+
 // ------------------------------------------------------------------ the thread's list, its tools and its guard
 
 /** Which thread holds which plugin for writing: the first write in a turn, until that turn ends. */
@@ -203,6 +245,78 @@ export class WriteLocks {
   }
 }
 
+/** Plugins that run the threads themselves: restarting them cuts off running turns, so they wait (0.11.0). */
+export const RUN_THREADS = ["claude", "pipeline"];
+
+/**
+ * Restarts of the plugins a turn changed (their panels show changes when opened again; a backend needs a restart, a
+ * plugin of your own is linked again). The plugins that run threads (RUN_THREADS) are restarted only once no thread
+ * has a turn running, claude last (it is this backend: its restart ends this process, and the threads go on after it
+ * as after any restart).
+ */
+export class PluginRestarts {
+  /** `busy()`: is any thread's turn running? */
+  constructor({ busy, everyMs = 30_000 }) {
+    this.busy = busy;
+    this.pending = new Map();
+    this.everyMs = everyMs;
+    this.timer = null;
+  }
+
+  /** `jobs`: [{id, run}]: run now, or as soon as no turn runs (RUN_THREADS). Gives {now: [ids], later: [ids]}. */
+  async request(jobs) {
+    const now = [];
+    for (const job of jobs) {
+      if (RUN_THREADS.includes(job.id)) this.pending.set(job.id, job.run);
+      else now.push(job);
+    }
+    for (const job of now) await runJob(job);
+    if (this.pending.size) {
+      await this.tick();
+      this.arm();
+    }
+    return { now: now.map((j) => j.id), later: jobs.map((j) => j.id).filter((id) => this.pending.has(id)) };
+  }
+
+  /** The waiting restarts, when no turn runs. Gives whether they ran. */
+  async tick() {
+    if (!this.pending.size || this.busy()) return false;
+    const jobs = [...this.pending].map(([id, run]) => ({ id, run })).sort((a, b) => (a.id === "claude") - (b.id === "claude"));
+    this.pending.clear();
+    for (const job of jobs) await runJob(job);
+    return true;
+  }
+
+  arm() {
+    if (this.timer || !this.pending.size) return;
+    this.timer = setInterval(() => {
+      void this.tick().then(() => {
+        if (!this.pending.size) this.stop();
+      });
+    }, this.everyMs);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+}
+
+async function runJob({ id, run }) {
+  try {
+    await run();
+  } catch (error) {
+    log(`restarting ${id} failed:`, errorMessage(error));
+  }
+}
+
+/** A plugin's newest released version on this PC (its sources' versions, newest first), or null. */
+export function releasedVersion(target) {
+  for (const s of target?.sources ?? []) if (s.versions?.length) return s.versions[0];
+  return null;
+}
+
 export class ThreadPlugins {
   /** `engine`: the threads; `hub`: layr's tools; `dataDir`: where each thread's empty folder is made. */
   constructor({ engine, hub, store, dataDir }) {
@@ -218,6 +332,11 @@ export class ThreadPlugins {
   /** A thread with a plugin list (0.7.0), as opposed to a thread in a project or in one plugin's folder. */
   static has(meta) {
     return Array.isArray(meta?.plugins);
+  }
+
+  /** A thread in a project (a worktree of layr's source) that also has a plugin list (0.11.0). */
+  static inProject(meta) {
+    return ThreadPlugins.has(meta) && meta.kind !== "plugin";
   }
 
   /** The folder a new thread with a plugin list works in (empty, its own). */
@@ -306,8 +425,48 @@ export class ThreadPlugins {
     }
     if (!folder || !existsSync(folder)) throw new Error(`The folder of ${t.name} is gone: ${folder}`);
     const manifest = readManifest(folder);
+    // `base`: the released version the app falls back to when a change is held back (plugin_hold, 0.11.0).
+    const base = t.place === "store" ? t.version : releasedVersion(t);
     return { id: t.id, name: t.name, mode, folder, place, isNew: false, extension: Boolean(manifest?.extension ?? t.extension),
-      version: manifest?.version ?? version ?? t.version, source, by, at: nowIso(), linked: t.linked !== false };
+      version: manifest?.version ?? version ?? t.version, source, by, at: nowIso(), linked: t.linked !== false,
+      ...(base ? { base } : {}) };
+  }
+
+  /**
+   * Holds back a plugin's changes (0.11.0, a thread in a project): they need a core the app doesn't have yet, so the
+   * app runs the plugin's released version again (`layr__plugin_switch`); the changes stay in its folder.
+   */
+  async hold(meta, plugin, why) {
+    const row = (meta.plugins ?? []).find((r) => r.id === plugin);
+    if (!row || row.mode !== "change") throw new Error(`${plugin} isn't a plugin this thread may change`);
+    if (row.held) return publicRow(row);
+    const t = (await this.catalog(true)).find((x) => x.id === plugin);
+    const version = row.base ?? releasedVersion(t);
+    if (!version) throw new Error(`${row.name} has no released version on this PC to run instead: it can't be held back`);
+    await this.hub.call("layr__plugin_switch", { plugin, version });
+    this.catalogCache = null;
+    const held = { version, why: why ? String(why) : null, at: nowIso() };
+    const rows = (meta.plugins ?? []).map((r) => (r.id === plugin ? { ...r, held } : r));
+    this.store.updateThread(meta.id, { plugins: rows });
+    this.engine.emitThread(meta);
+    return publicRow({ ...row, held });
+  }
+
+  /** The app runs the held-back changes again (the person, once the app has the core they need). */
+  async release(meta, plugin) {
+    const row = (meta.plugins ?? []).find((r) => r.id === plugin);
+    if (!row?.held) throw new Error(`${plugin} isn't held back in this thread`);
+    if (row.place === "made") await this.hub.call("layr__packages_link", { path: row.folder });
+    else await this.hub.call("layr__plugin_switch", { plugin, mine: true });
+    this.catalogCache = null;
+    const rows = (meta.plugins ?? []).map((r) => (r.id === plugin ? { ...r, held: null } : r));
+    this.store.updateThread(meta.id, {
+      plugins: rows,
+      pluginsNote: addNote(meta.pluginsNote, `The person switched on the held-back changes of ${row.name} (${row.id}): ` +
+        "the app runs them now."),
+    });
+    this.engine.emitThread(meta);
+    return publicRow({ ...row, held: null });
   }
 
   /** Puts a row into the thread's list (replacing the plugin's row) and says so to Claude with the next message. */
@@ -451,6 +610,14 @@ export class ThreadPlugins {
           return this.requestChange(current(), { plugin: a.plugin, version: a.version, source: a.source, why: a.why,
             newPlugin: a.new }, extra?.signal);
         })),
+        ...(ThreadPlugins.inProject(meta) ? [
+          sdkTool("plugin_hold", "Hold back your changes to a plugin because they need this project's unpublished " +
+            "core: the person's app runs the plugin's released version again, the changes stay in its folder until " +
+            "the person switches them on.", {
+            plugin: z.string().describe("The plugin's id"),
+            why: z.string().describe("What it needs from the new core, in plain words"),
+          }, run(async (a) => ({ plugin: await this.hold(current(), a.plugin, a.why) }))),
+        ] : []),
       ],
     });
   }
@@ -464,6 +631,7 @@ export class ThreadPlugins {
     const guard = async (input) => {
       const now = this.engine.requireThread(meta.id);
       const reason = guardDecision(input.tool_name, input.tool_input, {
+        project: ThreadPlugins.inProject(now),
         cwd: input.cwd ?? now.cwd,
         rows: now.plugins ?? [],
         home,
@@ -486,7 +654,7 @@ export class ThreadPlugins {
       mcpServer: this.server(meta),
       directories: rows.map((r) => r.folder).filter((f) => f && existsSync(f)),
       hooks: { PreToolUse: [{ matcher: GUARDED, hooks: [guard] }] },
-      systemAppend: pluginsPrompt({ rows, workDir: meta.cwd, hubUrl: this.hub.url }),
+      systemAppend: pluginsPrompt({ rows, workDir: meta.cwd, hubUrl: this.hub.url, project: ThreadPlugins.inProject(meta) }),
     };
   }
 

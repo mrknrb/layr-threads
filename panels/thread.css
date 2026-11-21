@@ -317,6 +317,8 @@ a.layr-link { text-decoration-style: dashed; }
 .plugin-chip .mode { font-size: 10.5px; border-radius: 999px; padding: 0 6px; background: var(--bg-3); color: var(--fg-dim); }
 .plugin-chip.change { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .plugin-chip.change .mode { background: color-mix(in srgb, var(--accent) 18%, var(--bg)); color: var(--accent); }
+.plugin-chip.held { border-style: dashed; }
+.plugin-chip.held .mode { background: color-mix(in srgb, var(--warning, #c90) 18%, var(--bg)); color: var(--warning, #c90); }
 #task { flex: none; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 6%, var(--bg));
   padding: 7px 14px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
 #task .task-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
