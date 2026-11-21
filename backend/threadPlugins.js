@@ -138,6 +138,9 @@ export function guardDecision(toolName, input, ctx) {
 /** A row as threads and panels see it. */
 export function publicRow(r) {
   return {
+    // 0.12.0: the thread's own copy of the plugin (a plugin worktree): the app runs the plugin as it was until it lands.
+    copy: r.copy ? { name: r.copy.name, branch: r.copy.branch ?? null, base: r.copy.base ?? null,
+      trying: Boolean(r.copy.trying) } : null,
     id: r.id, name: r.name, mode: r.mode, version: r.version ?? null, source: r.source ?? null, place: r.place ?? null,
     folder: r.folder ?? null, extension: Boolean(r.extension), isNew: Boolean(r.isNew), by: r.by ?? "you",
     at: r.at ?? null,
@@ -151,6 +154,7 @@ export function pluginsPrompt({ rows, workDir, hubUrl, project = false }) {
   const list = rows.length
     ? rows.map((r) => `- ${r.name} (id "${r.id}"${r.version ? `, version ${r.version}` : ""}): ` +
       `${r.mode === "change" ? "you may change it" : "read only"}${r.held ? `, held back (the app runs ${r.held.version})` : ""}` +
+      `${r.copy ? ", in your own copy (the app runs the plugin as it was until the person lands your changes)" : ""}` +
       `; folder ${r.folder}`).join("\n")
     : "- (none yet)";
   if (project) return projectPluginsPrompt({ list, workDir });
@@ -187,7 +191,9 @@ ${targetSystemPrompt({ id: "<id>", extension: rows.some((r) => r.extension), hub
 
 ## When you are done
 Say in two or three plain sentences what changed in which plugin and how to see it (panels show changes when opened
-again). A new plugin is linked into layr by itself when your turn ends.`;
+again). A new plugin is linked into layr by itself when your turn ends.${rows.some((r) => r.copy) ? `
+A plugin in your own copy isn't in the app yet: say that the person sees it with Try, and keeps it with Land (or
+throws it away with Drop), on the plugin in the thread's bar.` : ""}`;
 }
 
 /**
@@ -312,6 +318,11 @@ async function runJob({ id, run }) {
 }
 
 /** A plugin's newest released version on this PC (its sources' versions, newest first), or null. */
+/** 0.12.0: the name of a thread's own copies of plugins (plugin worktrees `work-<name>`): its copy name, or its id. */
+export function copyNameOf(meta) {
+  return String(meta?.copyName ?? meta?.id ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 48);
+}
+
 export function releasedVersion(target) {
   for (const s of target?.sources ?? []) if (s.versions?.length) return s.versions[0];
   return null;
@@ -386,7 +397,7 @@ export class ThreadPlugins {
    * A row for `plugin` in `mode`: its folder (a store plugin to change gets your copy first, `layr__plugin_edit`;
    * `version` / `source`: building on that version), or a new plugin's folder (`newPlugin: {name, extension}`).
    */
-  async resolve({ plugin, version = null, source = null, mode = "read", newPlugin = null, by = "you" }) {
+  async resolve({ plugin, version = null, source = null, mode = "read", newPlugin = null, by = "you", copy = null }) {
     if (newPlugin) {
       const extension = Boolean(newPlugin.extension);
       const { id, folder } = newPluginFolder({ id: newPlugin.id, name: newPlugin.name, description: newPlugin.description });
@@ -404,7 +415,15 @@ export class ThreadPlugins {
     const other = (version && version !== t.version) || source;
     let folder = t.path;
     let place = t.place;
-    if (mode === "change" && (place === "store" || other)) {
+    let copyRow = null;
+    if (mode === "change" && copy && !other && place !== "inside") {
+      // 0.12.0: the thread's own copy (a plugin worktree): the app keeps running the plugin as it was.
+      const r = await this.hub.call("layr__plugin_worktree", { plugin: t.id, name: copy });
+      folder = r?.path ?? folder;
+      place = place === "store" ? "changed" : place;
+      copyRow = { name: copy, branch: r?.branch ?? null, base: r?.base ?? null, trying: false };
+      this.catalogCache = null;
+    } else if (mode === "change" && (place === "store" || other)) {
       if (other && !(await this.coreKeepsGitOutside())) {
         throw new Error("Building on another version needs a newer layr: update the app first");
       }
@@ -429,7 +448,7 @@ export class ThreadPlugins {
     const base = t.place === "store" ? t.version : releasedVersion(t);
     return { id: t.id, name: t.name, mode, folder, place, isNew: false, extension: Boolean(manifest?.extension ?? t.extension),
       version: manifest?.version ?? version ?? t.version, source, by, at: nowIso(), linked: t.linked !== false,
-      ...(base ? { base } : {}) };
+      ...(base ? { base } : {}), ...(copyRow ? { copy: copyRow } : {}) };
   }
 
   /**
@@ -487,7 +506,8 @@ export class ThreadPlugins {
     if (had && !newPlugin && !version && !source && (had.mode === mode || (mode === "read" && had.mode === "change"))) {
       return publicRow(had);
     }
-    const row = await this.resolve({ plugin, version, source, mode, newPlugin, by });
+    const copy = meta.pluginCopies && mode === "change" ? copyNameOf(meta) : null;
+    const row = await this.resolve({ plugin, version, source, mode, newPlugin, by, copy });
     const note = by === "you"
       ? `The person ${had ? "changed" : "added"} ${row.name} (${row.id}) ${row.mode === "change" ? "for you to change" : "for you to read"}` +
         `${row.version ? `, version ${row.version}` : ""}: its folder is ${row.folder}.`
@@ -563,9 +583,106 @@ export class ThreadPlugins {
       }
       if (answer.decision === "allow_always") this.store.updateThread(meta.id, { allowAllPlugins: true });
     }
-    const row = await this.resolve({ plugin, version, source, mode: "change", by: "claude" });
+    const copy = meta.pluginCopies ? copyNameOf(meta) : null;
+    const row = await this.resolve({ plugin, version, source, mode: "change", by: "claude", copy });
     this.put(meta, row, null);
     return { allowed: true, plugin: publicRow(row) };
+  }
+
+  // ---------------------------------------------------------------- own copies (0.12.0, plugin worktrees)
+
+  /** Own copies on or off for the plugins this thread is allowed to change from now on. */
+  setCopies(meta, on) {
+    const pluginCopies = Boolean(on);
+    if (Boolean(meta.pluginCopies) === pluginCopies) return pluginCopies;
+    const note = pluginCopies
+      ? "The person switched on own copies: plugins you are allowed to change from now on get a copy of their own " +
+        "(the app runs them as they were until the person lands your changes)."
+      : "The person switched off own copies: plugins you are allowed to change from now on are changed in the app " +
+        "directly. Copies you have stay until they are landed or dropped.";
+    this.store.updateThread(meta.id, { pluginCopies, pluginsNote: addNote(meta.pluginsNote, note) });
+    this.engine.emitThread(meta);
+    return pluginCopies;
+  }
+
+  /** The rows with an own copy (of `plugin`, or all). */
+  copies(meta, plugin) {
+    const rows = (meta.plugins ?? []).filter((r) => r.copy && (!plugin || r.id === plugin));
+    if (plugin && !rows.length) throw new Error(`${plugin} has no copy of its own in this thread`);
+    return rows;
+  }
+
+  /** The row after its copy landed or was dropped: a fresh copy (own copies still on, `reopen`), else the app's folder. */
+  async after(meta, row, reopen) {
+    this.catalogCache = null;
+    if (reopen && meta.pluginCopies) {
+      return this.resolve({ plugin: row.id, mode: "change", by: row.by ?? "you", copy: row.copy.name });
+    }
+    const t = (await this.catalog(true)).find((x) => x.id === row.id);
+    return { ...row, folder: t?.path ?? row.folder, place: t?.place ?? row.place, copy: null };
+  }
+
+  /** Swaps rows and tells Claude what changed with its next message. */
+  swap(meta, next, notes) {
+    const rows = (meta.plugins ?? []).map((r) => next.get(r.id) ?? r);
+    this.store.updateThread(meta.id, { plugins: rows, ...(notes.length ? { pluginsNote: addNote(meta.pluginsNote, notes.join("\n")) } : {}) });
+    this.engine.markRestart(meta.id);
+    this.engine.emitThread(meta);
+  }
+
+  /**
+   * Land: each copy's changes go into the plugin the app runs (`layr__plugin_worktree_land`). A clash leaves the copy
+   * with conflicts to resolve (said to Claude). Gives [{plugin, landed, commit?, conflicts?, prompt?, extension}].
+   */
+  async land(meta, plugin, { reopen = true } = {}) {
+    const results = [];
+    const next = new Map();
+    const notes = [];
+    for (const row of this.copies(meta, plugin)) {
+      const r = await this.hub.call("layr__plugin_worktree_land", { plugin: row.id, name: row.copy.name });
+      if (r?.landed) {
+        const after = await this.after(meta, row, reopen);
+        next.set(row.id, after);
+        notes.push(`The person landed your changes to ${row.name} (${row.id}): the app runs them now.` +
+          (after.copy ? ` Your new copy is ${after.folder}.` : ` Its folder is ${after.folder} now.`));
+        results.push({ plugin: row.id, landed: true, commit: r.commit ?? null, changes: r.changes ?? 0,
+          extension: Boolean(row.extension) });
+      } else {
+        notes.push(r?.prompt ?? `Your changes to ${row.name} clash with the plugin as it is now: resolve ${(r?.conflicts ?? []).join(", ")}.`);
+        results.push({ plugin: row.id, landed: false, conflicts: r?.conflicts ?? [], prompt: r?.prompt ?? null });
+      }
+    }
+    this.swap(meta, next, notes);
+    return results;
+  }
+
+  /** Drop: each copy thrown away; the plugin stays as the app runs it. */
+  async drop(meta, plugin, { reopen = true } = {}) {
+    const results = [];
+    const next = new Map();
+    const notes = [];
+    for (const row of this.copies(meta, plugin)) {
+      await this.hub.call("layr__plugin_worktree_drop", { plugin: row.id, name: row.copy.name });
+      const after = await this.after(meta, row, reopen);
+      next.set(row.id, after);
+      notes.push(`The person threw away your changes to ${row.name} (${row.id}).` +
+        (after.copy ? ` You start again in a fresh copy: ${after.folder}.` : ` Its folder is ${after.folder} now.`));
+      results.push({ plugin: row.id, dropped: true });
+    }
+    this.swap(meta, next, notes);
+    return results;
+  }
+
+  /** Try: the app runs this thread's copy of `plugin` (on), or the plugin as it was again (off). */
+  async tryCopy(meta, plugin, on) {
+    const [row] = this.copies(meta, plugin);
+    await this.hub.call("layr__plugin_worktree_try", { plugin: row.id, name: row.copy.name, on: Boolean(on) });
+    this.catalogCache = null;
+    const rows = (meta.plugins ?? []).map((r) => (r.copy && r.copy.name === row.copy.name && r.id === row.id
+      ? { ...r, copy: { ...r.copy, trying: Boolean(on) } } : r.id === row.id ? r : r));
+    this.store.updateThread(meta.id, { plugins: rows });
+    this.engine.emitThread(meta);
+    return publicRow(rows.find((r) => r.id === row.id));
   }
 
   /** The tools Claude has in a thread with a plugin list (an in-process MCP server). */
@@ -639,6 +756,8 @@ export class ThreadPlugins {
         installed,
         allowed: [now.cwd, this.store.attachmentsDir(now.id)],
         claim: (row) => {
+          // An own copy is the thread's alone: no other thread writes it.
+          if (row.copy) return null;
           const holder = this.locks.claim(row.id, now.id, (t) => this.engine.isTurnActive(t));
           if (!holder) return null;
           const title = this.store.thread(holder)?.title ?? holder;

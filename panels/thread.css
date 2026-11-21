@@ -318,6 +318,10 @@ a.layr-link { text-decoration-style: dashed; }
 .plugin-chip.change { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .plugin-chip.change .mode { background: color-mix(in srgb, var(--accent) 18%, var(--bg)); color: var(--accent); }
 .plugin-chip.held { border-style: dashed; }
+/* 0.12.0: an own copy (a plugin worktree) */
+.plugin-chip.copy { border-style: dashed; }
+.plugin-chip.copy.trying { border-style: solid; }
+.copies-switch.on { color: var(--accent); }
 .plugin-chip.held .mode { background: color-mix(in srgb, var(--warning, #c90) 18%, var(--bg)); color: var(--warning, #c90); }
 #task { flex: none; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 6%, var(--bg));
   padding: 7px 14px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }

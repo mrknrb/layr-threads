@@ -1,8 +1,10 @@
-// The threads panel's Projects / Plugins / Extensions switch in a real browser, against the dev server (fake hub, real
-// backend), with screenshots. Starting a thread makes its folder but Claude isn't waited for (any model is fine):
+// The threads panel in a real browser, against the dev server (fake hub, real backend), with screenshots.
+// 0.12.0: one list of every thread (projects and plugins together, the last changed first, no tabs, no groups), and
+// one new-thread form whose "Works on" asks for a folder only for a project. Starting a thread doesn't wait for Claude
+// (any model is fine):
 //   PLAYWRIGHT_DIR=<folder with node_modules/playwright> node test/targets.ui.e2e.js [outDir]
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -32,17 +34,17 @@ const repos = [
     path: mk("lab-notebook", { id: "lab-notebook", name: "Lab notebook", description: "Samples in a table" }) },
   { id: "quiet-youtube", name: "Quiet YouTube", kind: "made", linked: true,
     path: mk("quiet-youtube", { id: "quiet-youtube", name: "Quiet YouTube", extension: "extension" }) },
-  { id: "notes", name: "Notes", kind: "store", linked: false, path: mk("notes", { id: "notes", name: "Notes" }) },
 ];
 const reposFile = path.join(tmp, "repos.json");
 writeFileSync(reposFile, JSON.stringify(repos));
+const projectDir = path.join(tmp, "my-app");
+mkdirSync(projectDir, { recursive: true });
 
 const port = 4300 + Math.floor(Math.random() * 600) + 20;
 const server = spawn(process.execPath, [path.join(pluginDir, "dev", "devserver.js"), "--port", String(port), "--data",
   path.join(tmp, "data"), "--repos", reposFile], {
   cwd: pluginDir,
   stdio: ["ignore", "pipe", "pipe"],
-  // As on an older core (every plugin made here in one folder): never the packages folder of a layr this is run from.
   env: { ...process.env, LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "layr-plugins"), LAYR_PACKAGES: "" },
 });
 server.stderr.on("data", (d) => process.env.LAYR_TEST_VERBOSE && process.stderr.write(d));
@@ -57,57 +59,42 @@ try {
   page.on("console", (m) => m.type() === "error" && !/Failed to load resource/.test(m.text()) && errors.push(m.text()));
   await page.goto(`${base}/`);
   const threads = page.frameLocator("#left iframe");
-  await threads.getByText("No projects yet").waitFor({ timeout: 20_000 });
-  check(await threads.locator("#modes button").count() === 3, "the switch has three choices");
+  await threads.getByText("No threads yet").waitFor({ timeout: 20_000 });
+  check(await threads.locator("#modes").count() === 0, "no Projects / Plugins / Extensions tabs");
 
-  // Plugins: your plugins as groups; the store one only in the form.
-  await threads.locator("#modes button", { hasText: "Plugins" }).click();
-  await threads.locator(".project-head .name", { hasText: "Lab notebook" }).waitFor();
-  check(await threads.locator(".project-head .name", { hasText: "Quiet YouTube" }).count() === 0, "extensions aren't under Plugins");
-  check(await threads.locator(".project-head .name", { hasText: "Notes" }).count() === 0, "untouched store plugins aren't listed");
-  await page.screenshot({ path: path.join(out, "01-plugins.png") });
-
+  // No projects yet: the form opens on plugins, with no plugin picker and no folder question.
   await threads.locator("#new").click();
-  const options = await threads.locator("#new-form select").first().locator("option").allTextContents();
-  check(options[0] === "+ New plugin" && options.includes("Lab notebook") && options.includes("Notes"), "the plugin picker",
-    options.join(", "));
-  await page.screenshot({ path: path.join(out, "02-new-plugin-form.png") });
-  await threads.locator("#new-form select").first().selectOption("notes");
-  check((await threads.locator(".target-note").textContent()).includes("own copy"), "a store plugin says: your own copy");
-  await threads.locator("#new-form select").first().selectOption("lab-notebook");
+  const on = threads.locator("#new-form .ws-choice").first().locator("button");
+  check(await on.count() === 2, "Works on: a project or plugins");
+  check((await threads.locator("#new-form .ws-choice button.on").first().textContent()).includes("Plugins"), "it starts on Plugins");
+  check(!(await threads.locator("#new-form select").first().isVisible()), "no project picker for plugins");
+  check((await threads.locator(".target-note").textContent()).includes("empty folder"), "the note: an empty folder");
+  const optionTexts = (await threads.locator("#new-form option").allTextContents()).join(" | ");
+  check(!/Lab notebook|New plugin|No plugin yet/.test(optionTexts), "no plugin picker", optionTexts);
+  await page.screenshot({ path: path.join(out, "01-new-on-plugins.png") });
   await threads.locator("#new-form textarea").fill("Reply with one word: ok. Change nothing.");
   await threads.getByRole("button", { name: "Start" }).click();
-  await threads.locator(".project-head .name", { hasText: "Lab notebook" }).waitFor();
   await threads.locator(".row .title").first().waitFor({ timeout: 20_000 });
-  check(await threads.locator(".row").count() >= 1, "the thread shows under its plugin");
-  await page.waitForTimeout(800);
-  await page.screenshot({ path: path.join(out, "03-plugin-thread.png") });
-  const thread = page.frameLocator("#right iframe.on");
-  const badge = await thread.locator("#workspace").textContent({ timeout: 20_000 });
-  check(badge.includes("lab-notebook"), "the thread names its plugin", badge);
+  check((await threads.locator(".row .badge.where").first().textContent()).includes("No plugins yet"), "the row says: no plugins yet");
 
-  // Extensions: a new one gets the template.
-  await threads.locator("#modes button", { hasText: "Extensions" }).click();
-  await threads.locator(".project-head .name", { hasText: "Quiet YouTube" }).waitFor();
-  check(await threads.locator(".project-head .name", { hasText: "Lab notebook" }).count() === 0, "plugins aren't under Extensions");
+  // A project: the folder question shows, and its thread goes on top of the same list.
+  await threads.locator("#new-form").waitFor({ state: "hidden" });
   await threads.locator("#new").click();
-  await threads.locator("#new-form input.input").first().fill("Tab titles");
-  await threads.locator("#new-form .chip").first().click();
-  await page.screenshot({ path: path.join(out, "04-new-extension-form.png") });
+  await threads.locator("#new-form textarea").waitFor();
+  await on.filter({ hasText: "A project" }).click();
+  check(await threads.locator("#new-form select").first().isVisible(), "a project asks for its folder");
+  await threads.locator("#new-form input.input").first().fill(projectDir);
+  await threads.locator("#new-form .inline-row .btn", { hasText: "Add" }).click();
+  await page.waitForTimeout(500);
+  await threads.locator("#new-form textarea").fill("Reply with one word: ok. Change nothing.");
+  await page.screenshot({ path: path.join(out, "02-new-on-project.png") });
   await threads.getByRole("button", { name: "Start" }).click();
-  const folder = path.join(tmp, "layr-plugins", "tab-titles");
-  for (let i = 0; i < 100 && !existsSync(path.join(folder, "extension", "manifest.json")); i++) await page.waitForTimeout(200);
-  check(existsSync(path.join(folder, "extension", "background.js")), "the new extension's template", folder);
-  const lm = JSON.parse(readFileSync(path.join(folder, "layr.json"), "utf8"));
-  check(lm.extension === "extension", "its layr.json names the extension");
-  await threads.locator(".project-head .name", { hasText: "Tab titles" }).waitFor({ timeout: 20_000 });
+  await threads.locator(".row").nth(1).waitFor({ timeout: 20_000 });
+  check(await threads.locator(".project-head").count() === 0, "no groups by project or plugin");
+  check((await threads.locator(".row .badge.where").first().textContent()).includes("my-app"), "the newest (the project's) is on top");
+  check((await threads.locator(".row .badge.where").nth(1).textContent()).includes("No plugins yet"), "the plugin thread under it, in the same list");
   await page.waitForTimeout(800);
-  await page.screenshot({ path: path.join(out, "05-extension-thread.png") });
-
-  // Projects: none of that shows there.
-  await threads.locator("#modes button", { hasText: "Projects" }).click();
-  await threads.getByText("No projects yet").waitFor();
-  check(true, "projects view stays free of plugin threads");
+  await page.screenshot({ path: path.join(out, "03-one-list.png") });
 } catch (error) {
   check(false, "run", error.message);
 } finally {

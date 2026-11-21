@@ -4,7 +4,6 @@
 .search .icon { position: absolute; left: 9px; top: 8px; color: var(--fg-dim); }
 #search { width: 100%; padding-left: 30px; }
 
-#modes { margin: 0 10px 4px; flex: none; }
 .project-head .place { font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 10.5px; padding: 0 6px;
   border-radius: 8px; background: var(--bg-3); color: var(--fg-dim); flex: none; }
 .project-head .place.made { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
@@ -68,7 +67,7 @@
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 .form-actions .muted { flex: 1; font-size: 12px; }
 .inline-row { display: flex; gap: 6px; }
-.inline-row .input { flex: 1; }
+.inline-row .input, .inline-row .select { flex: 1; min-width: 0; }
 
 #foot { flex: none; border-top: 1px solid var(--border); padding: 6px 10px; display: flex; align-items: center;
   gap: 8px; }
@@ -79,3 +78,7 @@
 .meter.high .bar > i { background: var(--danger); }
 .foot-actions { display: flex; gap: 2px; }
 #show-archived.on { color: var(--accent); }
+
+/* 0.12.0: what a thread works on (its project, or the plugins on its list) */
+.row .sub .badge.where { color: var(--fg-dim); }
+#list > .row { margin-top: 2px; }

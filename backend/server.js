@@ -18,7 +18,7 @@ import { Hub } from "./hub.js";
 import { applyMoves } from "./moved.js";
 import { linkIfReady, oldPluginsRoot, packagesRoot } from "./pluginMaker.js";
 import { Store } from "./store.js";
-import { parseMentions, PluginRestarts, publicRow, ThreadPlugins } from "./threadPlugins.js";
+import { copyNameOf, parseMentions, PluginRestarts, publicRow, ThreadPlugins } from "./threadPlugins.js";
 import { isPluginsRoot, listTargets, readManifest, TARGET_KINDS } from "./targets.js";
 import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
@@ -109,6 +109,8 @@ async function afterPluginsTurn(meta, saved) {
     if (row.mode !== "change") continue;
     // 0.11.0: a change held back (it needs a core the app doesn't have) isn't what the app runs: nothing to restart.
     if (row.held) continue;
+    // 0.12.0: an own copy isn't what the app runs either (unless the person tries it).
+    if (row.copy && !row.copy.trying) continue;
     const manifest = changed.has(row.id) ? readManifest(row.folder) : null;
     if (row.place === "made" && (changed.has(row.id) || (row.isNew && !row.linked))) {
       // A plugin of your own is linked again (manifest changes show; its backend restarts with it).
@@ -393,6 +395,9 @@ tool(
       .describe("With project (0.11.0): the thread also gets a plugin list, of plugins installed in layr it may read " +
         "and change beside the project (an empty list: none yet, mentions and Claude add them); plugins the prompt " +
         "mentions (@id) go on it to read"),
+    pluginCopies: z.boolean().optional().describe("With target or plugins (0.12.0): plugins it may change get a copy of " +
+      "their own (a plugin worktree): the app runs them as they were until the changes land (thread_plugin_copy), " +
+      "so several threads can change one plugin at once"),
   },
   async (a) => {
     if (a.target) return startOnTarget(a);
@@ -411,8 +416,12 @@ async function startOnTarget(a) {
   const kind = a.target.kind;
   const rows = [];
   let main = null;
+  // 0.12.0: own copies are named after the thread's folder (its id doesn't exist yet).
+  const workDir = ensureDir(plugins.workDir());
+  const copyName = a.pluginCopies ? copyNameOf({ id: path.basename(workDir) }) : null;
   if (a.target.plugin) {
-    main = await plugins.resolve({ plugin: a.target.plugin, version: a.target.version, source: a.target.source, mode: "change" });
+    main = await plugins.resolve({ plugin: a.target.plugin, version: a.target.version, source: a.target.source,
+      mode: "change", copy: copyName });
   } else if (kind !== "plugins") {
     main = await plugins.resolve({
       newPlugin: { id: a.target.id, name: a.target.name, extension: kind === "extension", description: a.prompt }, mode: "change",
@@ -421,14 +430,14 @@ async function startOnTarget(a) {
   if (main) rows.push(main);
   for (const p of a.target.plugins ?? []) {
     if (rows.some((r) => r.id === p.plugin)) continue;
-    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read" }));
+    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read",
+      copy: p.change ? copyName : null }));
   }
   const known = new Set((await plugins.catalog()).map((t) => t.id));
   for (const m of parseMentions(a.prompt)) {
     if (!known.has(m.id) || rows.some((r) => r.id === m.id)) continue;
     rows.push(await plugins.resolve({ plugin: m.id, version: m.version ?? undefined, mode: "read" }).catch(() => null));
   }
-  const workDir = ensureDir(plugins.workDir());
   const project = store.addProject({ path: path.dirname(workDir), name: "Plugin threads", kind: "plugin" });
   hub.emit("claude:threads", { kind: "projects" });
   const isNew = Boolean(main?.isNew);
@@ -446,6 +455,7 @@ async function startOnTarget(a) {
     baseRef: undefined,
     kind: "plugin",
     plugins: rows.filter(Boolean),
+    ...(copyName ? { pluginCopies: true, copyName } : {}),
     extra: { target: "plugins", pluginId: main?.id ?? null, folder: workDir, place: main?.place ?? null, isNew },
   });
   return { thread, folder: main?.folder ?? workDir, pluginId: main?.id ?? null, place: main?.place ?? null, isNew,
@@ -764,9 +774,12 @@ tool(
     remove: z.boolean().optional(),
     allowAll: z.boolean().optional(),
     held: z.literal(false).optional().describe("false: the app runs the plugin's held-back changes now (0.11.0)"),
+    copies: z.boolean().optional().describe("0.12.0: own copies (plugin worktrees) for the plugins Claude may change " +
+      "from now on (true), or changing them in the app directly (false)"),
   },
   async (a) => {
     const meta = engine.requireThread(a.thread);
+    if (a.copies !== undefined) plugins.setCopies(meta, a.copies);
     if (a.plugin && a.held === false) await plugins.release(meta, a.plugin);
     if (a.allowAll !== undefined) {
       store.updateThread(meta.id, { allowAllPlugins: a.allowAll });
@@ -775,6 +788,41 @@ tool(
     if (a.plugin && a.remove) plugins.remove(meta, a.plugin);
     else if (a.plugin && a.mode) await plugins.setMode(meta, a.plugin, a.mode);
     return { thread: engine.summary(meta) };
+  },
+);
+
+tool(
+  "thread_plugin_copy",
+  "A thread's own copies of plugins (0.12.0, plugin worktrees): land (its changes go into the plugin the app runs; a " +
+    "clash leaves conflicts in the copy for Claude to resolve, then land again), drop (thrown away), try (the app runs " +
+    "the copy until untry, land or drop). plugin: one (default: every copy; try needs one). reopen: false: no fresh copy " +
+    "after land / drop (a task that ends). Gives {results}.",
+  {
+    thread: threadId,
+    plugin: pluginId.optional(),
+    action: z.enum(["land", "drop", "try", "untry"]),
+    reopen: z.boolean().optional(),
+  },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    if ((a.action === "land" || a.action === "drop") && engine.isTurnActive(meta.id)) {
+      throw new Error("Wait until the thread's turn ends");
+    }
+    let results;
+    if (a.action === "try" || a.action === "untry") {
+      if (!a.plugin) throw new Error("Which plugin to try? Give plugin");
+      results = [await plugins.tryCopy(meta, a.plugin, a.action === "try")];
+    } else {
+      const reopen = a.reopen !== false;
+      results = a.action === "land" ? await plugins.land(meta, a.plugin, { reopen }) : await plugins.drop(meta, a.plugin, { reopen });
+      const said = results.map((r) => r.landed === false
+        ? `${r.plugin}: clashes in ${r.conflicts.join(", ")} (Claude resolves them, then land again)`
+        : `${r.plugin}: ${a.action === "land" ? "landed" : "thrown away"}`);
+      const entry = store.append(meta.id, { type: "system", subtype: `copy-${a.action}`, text: said.join("; ") });
+      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      for (const r of results) if (r.landed && r.extension) await reloadExtension(meta, r.plugin);
+    }
+    return { results, thread: engine.summary(engine.requireThread(meta.id)) };
   },
 );
 

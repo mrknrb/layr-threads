@@ -125,6 +125,7 @@ writeFileSync(path.join(storeV, "layr.json"), JSON.stringify({ id: "store1", nam
 const store1Mine = path.join(packages, "store1", "mine");
 const calls = [];
 const history = [];
+let landClash = false;
 const hub = {
   available: true,
   url: null,
@@ -144,6 +145,19 @@ const hub = {
       return { path: store1Mine, branch: "mine" };
     }
     if (name === "layr__plugin_history") return { commits: history, more: false };
+    // 0.12.0: own copies (plugin worktrees).
+    if (name === "layr__plugin_worktree") {
+      const dir = path.join(packages, args.plugin, `work-${args.name}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "layr.json"), JSON.stringify({ id: args.plugin, name: args.plugin, version: "1.0.0" }));
+      return { path: dir, branch: `work/${args.name}`, base: "mine", created: true };
+    }
+    if (name === "layr__plugin_worktree_land") {
+      if (landClash) return { landed: false, conflicts: ["panels/main.html"], prompt: "Resolve panels/main.html. Don't run git." };
+      return { landed: true, commit: "landed1", changes: 2 };
+    }
+    if (name === "layr__plugin_worktree_drop") return { dropped: true };
+    if (name === "layr__plugin_worktree_try") return { trying: args.on ? args.name : null };
     if (name === "layr__plugin_switch" || name === "layr__packages_link") return { id: args.plugin ?? null };
     if (name === "layr__plugin_undo") {
       if (args.commit === "bad") throw new Error("later changes touch the same lines");
@@ -285,6 +299,40 @@ await plugins.hold(p1, "alpha", "x").catch((e) => { holdError = e.message; });
 check(/isn't a plugin this thread may change/.test(holdError ?? ""), "only a plugin it may change is held", holdError);
 check(releasedVersion({ sources: [{ versions: [] }, { versions: ["2.0.0", "1.0.0"] }] }) === "2.0.0" &&
   releasedVersion({}) === null, "the newest released version");
+
+// Own copies (0.12.0): with the switch on, a plugin it may change gets a plugin worktree; land, a clash, try, drop.
+threads.c1 = { id: "c1", cwd: work, plugins: [], permissionMode: "default", allowAllPlugins: true };
+const c1 = threads.c1;
+check(plugins.setCopies(c1, true) === true && /switched on own copies/.test(c1.pluginsNote ?? ""), "own copies on, Claude is told");
+const cr = await plugins.requestChange(c1, { plugin: "alpha", why: "x" });
+const cdir = path.join(packages, "alpha", "work-c1");
+check(cr.allowed && cr.plugin.folder === cdir && cr.plugin.copy?.name === "c1" && cr.plugin.copy.branch === "work/c1",
+  "allowed: its own copy, not the app's folder", cr.plugin);
+check(pluginsPrompt({ rows: c1.plugins, workDir: work, hubUrl: null }).includes("in your own copy") &&
+  pluginsPrompt({ rows: c1.plugins, workDir: work, hubUrl: null }).includes("with Try"), "the prompt says it is a copy");
+const cext = await plugins.sessionExtras(c1);
+check(cext.directories.includes(cdir), "the session gets the copy's folder");
+const tried = await plugins.tryCopy(c1, "alpha", true);
+check(tried.copy.trying && calls.some((c) => c.name === "layr__plugin_worktree_try" && c.args.on === true), "try: the app runs the copy");
+await plugins.tryCopy(c1, "alpha", false);
+landClash = true;
+const clash = await plugins.land(c1, "alpha");
+check(clash[0].landed === false && clash[0].conflicts[0] === "panels/main.html" && /Resolve panels/.test(c1.pluginsNote) &&
+  c1.plugins.find((r) => r.id === "alpha").copy, "a clash: still the copy, Claude is told what to resolve", clash);
+landClash = false;
+const landed = await plugins.land(c1, "alpha");
+const afterLand = c1.plugins.find((r) => r.id === "alpha");
+check(landed[0].landed && afterLand.copy?.name === "c1" && /landed your changes to Alpha/.test(c1.pluginsNote),
+  "landed: the app runs it, and a fresh copy goes on (own copies still on)", { landed, afterLand });
+const dropped = await plugins.drop(c1, "alpha", { reopen: false });
+const afterDrop = c1.plugins.find((r) => r.id === "alpha");
+check(dropped[0].dropped && afterDrop.copy === null && afterDrop.folder === mineA, "dropped without reopening: the app's folder again", afterDrop);
+let noCopy = null;
+await plugins.land(c1, "alpha").catch((e) => { noCopy = e.message; });
+check(/no copy of its own/.test(noCopy ?? ""), "landing without a copy is refused", noCopy);
+plugins.setCopies(c1, false);
+const live = await plugins.requestChange(c1, { plugin: "beta", why: "y" });
+check(live.plugin.copy === null && live.plugin.folder === mineB, "own copies off: changed in the app's folder", live.plugin);
 
 // Restarts: claude and pipeline wait until no turn runs, claude last.
 let busy = true;

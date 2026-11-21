@@ -2046,10 +2046,14 @@ function renderPlugins(t) {
     const heldTitle = p.held ? `
 Held back: the app runs ${p.held.version} until you switch these changes on` +
       `${p.held.why ? ` (${p.held.why})` : ""}` : "";
-    const chip = h("button", { class: `plugin-chip ${p.mode}${p.held ? " held" : ""}`,
-      title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}${heldTitle}` },
+    // 0.12.0: the thread's own copy: the app runs the plugin as it was until you land it (or try it).
+    const copyTitle = p.copy ? `
+Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.trying ? " (you are trying the copy now)" : ""}` : "";
+    const modeText = p.held ? "held back" : p.copy ? (p.copy.trying ? "trying copy" : "own copy") : label;
+    const chip = h("button", { class: `plugin-chip ${p.mode}${p.held ? " held" : ""}${p.copy ? " copy" : ""}${p.copy?.trying ? " trying" : ""}`,
+      title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}${heldTitle}${copyTitle}` },
     icon(p.extension ? "puzzle" : "box", 12), h("span", { class: "name" }, p.name),
-    p.version ? h("span", { class: "ver" }, p.version) : null, h("span", { class: "mode" }, p.held ? "held back" : label));
+    p.version ? h("span", { class: "ver" }, p.version) : null, h("span", { class: "mode" }, modeText));
     chip.addEventListener("click", (ev) => pluginMenu(ev, p));
     chip.addEventListener("contextmenu", (ev) => pluginMenu(ev, p));
     return chip;
@@ -2064,12 +2068,24 @@ Held back: the app runs ${p.held.version} until you switch these changes on` +
     input.selectionStart = input.selectionEnd = before.length + (before && !/\s$/.test(before) ? 2 : 1);
     renderMention();
   });
+  const copies = t.plugins.filter((p) => p.copy);
+  const land = copies.length ? h("button", { class: "btn primary small", title: `Put this thread's changes into the app: ${copies.map((p) => p.name).join(", ")}` },
+    icon("check", 12), copies.length > 1 ? `Land all (${copies.length})` : `Land ${copies[0].name}`) : null;
+  land?.addEventListener("click", () => void copyAction("land", null));
+  const own = h("button", { class: `btn ghost small copies-switch${t.pluginCopies ? " on" : ""}`,
+    title: t.pluginCopies
+      ? "Own copies on: plugins Claude may change get a copy of their own; the app runs them as they were until you land the changes. Click to change plugins in the app directly from now on."
+      : "Own copies off: Claude changes plugins in the app directly (you see each change at once). Click to give plugins Claude may change a copy of their own from now on." },
+  icon(t.pluginCopies ? "branch" : "sparkle", 12), t.pluginCopies ? "Own copies" : "Live");
+  own.addEventListener("click", () => setPlugin({ copies: !t.pluginCopies }));
   el.replaceChildren(...[
     h("span", { class: "plugins-label", title: "What this thread may read and change. Mention a plugin with @ to " +
       "let Claude read it; Claude asks before changing one." }, "Plugins"),
     ...chips,
     t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
     add,
+    own,
+    land,
     t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
       "all allowed") : null,
   ].filter(Boolean));
@@ -2092,7 +2108,12 @@ function pluginMenu(ev, p) {
       : { label: "Read only", icon: "visibility", run: () => setPlugin({ plugin: p.id, mode: "read" }) },
     p.held ? { label: `Run these changes now (the app runs ${p.held.version})`, icon: "refresh",
       run: () => setPlugin({ plugin: p.id, held: false }) } : null,
-    p.mode === "change" ? { label: "Take back this thread's changes", icon: "undo", run: () => takeBack(p) } : null,
+    p.copy ? { label: "Land: put these changes into the app", icon: "check", run: () => copyAction("land", p) } : null,
+    p.copy ? (p.copy.trying
+      ? { label: "Stop trying: the app runs the plugin as it was", icon: "close", run: () => copyAction("untry", p) }
+      : { label: "Try: the app runs this copy for now", icon: "play_arrow", run: () => copyAction("try", p) }) : null,
+    p.copy ? { label: "Drop: throw these changes away", icon: "delete", run: () => copyAction("drop", p) } : null,
+    p.mode === "change" && !p.copy ? { label: "Take back this thread's changes", icon: "undo", run: () => takeBack(p) } : null,
     p.place !== "inside" ? { label: "History and undo", icon: "history", run: () => openLink(pluginPageLink(p.id, "history")) } : null,
     p.extension ? { label: "Reload the extension", icon: "refresh", run: () => layr.tools.call("extension_reload", { plugin: p.id },
       { plugin: "layr" }).then(() => notify("Extension reloaded", "success"), (e) => notify(e.message, "error")) } : null,
@@ -2102,6 +2123,37 @@ function pluginMenu(ev, p) {
     t?.allowAllPlugins ? { label: "Ask again before changing plugins", icon: "lock", run: () => setPlugin({ allowAll: false }) } : null,
     { label: "Take it off the list", icon: "close", run: () => setPlugin({ plugin: p.id, remove: true }) },
   ], ev);
+}
+
+/**
+ * 0.12.0: an own copy's Land / Drop / Try / Stop trying (`p` null: every copy, land and drop only). A clash on land
+ * offers to let Claude resolve it in the copy.
+ */
+async function copyAction(action, p) {
+  const holder = $("plugins");
+  if (action === "drop" && !(await confirmIn(holder, `Throw away this thread's changes to ${p ? p.name : "every plugin"}? The plugin stays as the app runs it.`,
+    { ok: "Drop", danger: true }))) return;
+  try {
+    const r = await call("thread_plugin_copy", { thread: state.id, action, ...(p ? { plugin: p.id } : {}) });
+    if (r?.thread) setThread(r.thread);
+    const results = r?.results ?? [];
+    if (action === "try" || action === "untry") {
+      notify(action === "try" ? `The app runs your copy of ${p.name} now` : `The app runs ${p.name} as it was again`, "success");
+      return;
+    }
+    const clashes = results.filter((x) => x.landed === false);
+    const done = results.filter((x) => x.landed || x.dropped).map((x) => x.plugin);
+    if (done.length) notify(`${action === "land" ? "Landed" : "Dropped"}: ${done.join(", ")}`, "success");
+    if (clashes.length && (await confirmIn(holder, `${clashes.map((x) => x.plugin).join(", ")} changed meanwhile and clashes with ` +
+      `this thread's changes (${clashes.flatMap((x) => x.conflicts).join(", ")}). Let Claude resolve it, then land again?`,
+    { ok: "Let Claude resolve it" }))) {
+      const text = clashes.map((x) => x.prompt).filter(Boolean).join("\n\n");
+      const s = await call("thread_send", { thread: state.id, text });
+      if (s?.thread) setThread(s.thread);
+    }
+  } catch (error) {
+    notify(error.message, "error");
+  }
 }
 
 /** Undo what this thread changed in a plugin (null: in every plugin it may change), after asking. */
