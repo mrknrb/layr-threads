@@ -2,7 +2,6 @@
 // 0.3.2: a switch at the top says what threads work on: Projects (folders), Plugins (layr plugins) or Extensions
 // (plugins that bring a Chrome extension); the form then picks a project, or a plugin / extension (or a new one).
 import {
-  STATUS_LABEL,
   call,
   defaultModelName,
   effortOptions,
@@ -15,6 +14,7 @@ import {
   permissionOptions,
   relTime,
   ready,
+  statusLabel,
 } from "./common.js";
 import {
   adoptThread,
@@ -355,8 +355,8 @@ function threadRow(t) {
       notify(error.message, "error");
     }
   });
-  const row = h("div", { class: `row${state.active === t.id ? " active" : ""}`, tabindex: "0", title: `${STATUS_LABEL[t.status] ?? t.status} · ${t.cwd}` },
-    h("span", { class: `dot ${t.status}` }),
+  const row = h("div", { class: `row${state.active === t.id ? " active" : ""}`, tabindex: "0", title: `${statusLabel(t)} · ${t.cwd}` },
+    h("span", { class: `dot ${t.status}${t.limitPause ? " paused" : ""}` }),
     h("span", { class: "title" }, t.title),
     h("span", { class: "time" }, relTime(t.lastActivity)),
     h("div", { class: "sub" },

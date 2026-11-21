@@ -5,7 +5,7 @@
 // with an in-panel confirm where a button asks for one. The task comes from `pipeline__thread_task` (ui.js threadTask).
 import { h, icon, notify } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
-import { confirmIn, onPhone, openLink, pipelineCall } from "./ui.js";
+import { confirmIn, confirmPopup, onPhone, openLink, pipelineCall } from "./ui.js";
 
 const COLUMN = { proposed: "Proposed", ready: "Ready", running: "Running", stopped: "Stopped", settled: "Settled" };
 const STAKES_TONE = { high: "danger", medium: "warn", low: "" };
@@ -68,6 +68,12 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
       h("span", { class: "task-title" }, inlineMarkdown(task.title ?? ""))),
   ];
   if (note) parts.push(h("div", { class: "task-note" }, inlineMarkdown(note)));
+  // What waits from the text box is still in it, and goes as the box holds it when Away comes.
+  if (task.box) {
+    parts.push(h("div", { class: "task-box" }, icon("send", 13), task.box.start
+      ? "Approved · waits for Away: Start the work goes with what the text box holds then. You can still edit it."
+      : "Your message waits for Away: what the text box holds then goes. You can still edit it."));
+  }
   if (task.landing?.state) {
     const bad = Boolean(task.landing.problem);
     parts.push(h("div", { class: `task-landing${bad ? " bad" : ""}` }, icon(bad ? "x" : "branch", 13),
@@ -90,14 +96,25 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
     const kind = btn.kind === "primary" ? " primary" : btn.kind === "danger" ? " danger" : "";
     const el2 = h("button", { class: `btn small${kind}` }, btn.label);
     el2.addEventListener("click", async () => {
-      if (btn.confirm && !(await confirmIn(actions, btn.confirm, { ok: btn.label, danger: btn.kind === "danger" }))) return;
+      // Land asks only whether you're sure, in a popup (the board's Land says the whole of what happens).
+      if (btn.id === "land") {
+        if (!(await confirmPopup(`Land #${task.number}? Are you sure?`, { ok: "Land" }))) return;
+      } else if (btn.confirm && !(await confirmIn(actions, btn.confirm, { ok: btn.label, danger: btn.kind === "danger" }))) return;
       for (const x of actions.querySelectorAll("button")) x.disabled = true;
       try {
         // "start" is Land now too (a Land waiting for Away): only Send now takes the text box along.
         const sendNow = btn.id === "start" && btn.label === "Send now";
-        const text = btn.id === "approve" || sendNow ? composer.composerText?.() ?? "" : "";
-        if (btn.id === "approve" && text) await pipelineCall("thread_action", { thread: threadId, action: btn.id, text });
-        else await pipelineCall("thread_action", { thread: threadId, action: btn.id });
+        // What waits from the text box goes as the box holds it now: nothing is sent after it.
+        if (sendNow && task.box) await composer.syncBox?.(true);
+        const text = btn.id === "approve" || (sendNow && !task.box) ? composer.composerText?.() ?? "" : "";
+        if (btn.id === "approve") {
+          // `box`: if it waits for Away, the text stays in the box (`boxWaits`) and goes as the box holds it then.
+          const r = await pipelineCall("thread_action", { thread: threadId, action: btn.id, ...(text ? { text } : {}), box: true });
+          if (r?.boxWaits) {
+            composer.onBoxed?.({ start: true });
+            return;
+          }
+        } else await pipelineCall("thread_action", { thread: threadId, action: btn.id });
         // Send now: what waited goes first (When away is off now), then what was picked or typed after it.
         if (sendNow && text && task.number != null) await pipelineCall("send", { number: task.number, text });
         if (text) composer.onSent?.();

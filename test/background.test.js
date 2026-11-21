@@ -101,3 +101,16 @@ test("a backend that died with background work running reports it when it starts
   assert.deepEqual(store.thread(meta.id).background, []);
   assert.equal(store.thread(meta.id).lostBackground.length, 1);
 });
+
+test("a subagent's model is kept on it from its first answer", () => {
+  const { engine, store, meta, live } = setup();
+  engine.subagentStarted(meta, { task_id: "a1", tool_use_id: "tu1", description: "Look", subagent_type: "Explore" });
+  const answer = (model) => engine.handleAssistant(meta, live, {
+    type: "assistant", parent_tool_use_id: "tu1", agent_id: "a1", uuid: `u-${model}`,
+    message: { id: "m1", model, content: [{ type: "text", text: "found it" }] },
+  });
+  answer("claude-haiku-5-5");
+  assert.equal(store.threads[meta.id].subagents[0].model, "claude-haiku-5-5");
+  answer("claude-sonnet-5-5");
+  assert.equal(store.threads[meta.id].subagents[0].model, "claude-sonnet-5-5");
+});

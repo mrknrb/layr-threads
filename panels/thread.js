@@ -5,13 +5,14 @@
 // going through the pipeline (pipeline.js).
 import { answerPrefix, hasPicks, pickIn, questionsOf, toggleAgree } from "./boxes.js";
 import {
-  STATUS_LABEL,
   call,
+  clock,
   defaultModelName,
   effortOptions,
   fillSelect,
   h,
   icon,
+  modelName,
   modelOptions,
   money,
   notify,
@@ -20,6 +21,7 @@ import {
   readImage,
   ready,
   relTime,
+  statusLabel,
   tokens,
 } from "./common.js";
 import { createDraftStore } from "./drafts.js";
@@ -407,6 +409,7 @@ function drawEntry(e, into) {
         return kept(h("div", { class: "sys warn" }, `Could not connect: ${e.failedMcp.join(", ")}`));
       }
       if (e.subtype === "saved" && e.commit) return kept(savedLine(e));
+      if (e.subtype === "limit_pause") return kept(h("div", { class: "sys" }, icon("clock", 12), e.text));
       return kept(h("div", { class: `sys${e.subtype === "background_lost" ? " warn" : ""}` }, e.text));
     case "error":
       return kept(e.retry ? retryBox(e) : h("div", { class: "error-box" }, e.message));
@@ -484,6 +487,7 @@ function noteAgent(e) {
       description: String(e.input?.description ?? ""),
       type: e.input?.subagent_type ?? null,
       prompt: String(e.input?.prompt ?? ""),
+      asked: typeof e.input?.model === "string" ? e.input.model : null,
       parent: e.parent ?? null,
       agent: null,
       result: null,
@@ -504,7 +508,9 @@ function agentInfo(a) {
   const known = (state.thread?.subagents ?? []).find((s) => s.toolUseId === a.toolUseId || (a.agent && s.id === a.agent));
   const id = a.agent ?? known?.id ?? agentIdIn(a.result);
   const status = known?.status ?? (a.result != null ? "done" : busy(state.thread) ? "running" : "stopped");
-  return { id, status };
+  // The model its answers came from; threads from before layr kept it: the one its Agent call asked for, if any.
+  const model = known?.model ? modelName(known.model) : a.asked ? modelName(a.asked) : null;
+  return { id, status, model };
 }
 
 const SUB_STATUS = { running: "working", done: "finished", failed: "failed", stopped: "stopped" };
@@ -663,7 +669,7 @@ function renderSubbar() {
     bar.hidden = true;
     return bar.replaceChildren();
   }
-  const { status } = agentInfo(a);
+  const { status, model } = agentInfo(a);
   const backTo = state.subStack.length ? state.agents.get(state.subStack.at(-1)) : null;
   const back = h("button", { class: "btn ghost small" }, "← ",
     backTo ? `Back to “${backTo.description || "subagent"}”` : "Main thread");
@@ -672,7 +678,8 @@ function renderSubbar() {
   toMain?.addEventListener("click", () => closeSub({ all: true }));
   bar.replaceChildren(...[back, toMain].filter(Boolean), h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }),
     h("span", { class: "sub-title", title: a.description }, a.description || "Subagent"),
-    ...(a.type ? [h("span", { class: "badge" }, a.type)] : []), h("span", { class: "muted" }, SUB_STATUS[status] ?? status));
+    ...(a.type ? [h("span", { class: "badge" }, a.type)] : []), ...(model ? [h("span", { class: "badge", title: "Its model" }, model)] : []),
+    h("span", { class: "muted" }, SUB_STATUS[status] ?? status));
   bar.hidden = false;
 }
 
@@ -694,10 +701,11 @@ function renderSubagents() {
   const infos = list.map((a) => ({ a, ...agentInfo(a) }));
   const running = infos.filter((i) => i.status === "running").length;
   const wasOpen = el.querySelector("details")?.open ?? false;
-  const rows = infos.slice().reverse().map(({ a, status }) => {
+  for (const { a, model } of infos) setCardModel(a.toolUseId, model);
+  const rows = infos.slice().reverse().map(({ a, status, model }) => {
     const row = h("button", { class: `sub-item${state.sub?.toolUseId === a.toolUseId ? " on" : ""}`, title: a.prompt },
       h("span", { class: `dot ${SUB_DOT[status] ?? ""}` }), h("span", { class: "t" }, a.description || "Subagent"),
-      h("span", { class: "k" }, [a.type, SUB_STATUS[status] ?? status].filter(Boolean).join(" · ")));
+      h("span", { class: "k" }, [a.type, model, SUB_STATUS[status] ?? status].filter(Boolean).join(" · ")));
     row.addEventListener("click", () => void openSub(a.toolUseId, { push: false }));
     return row;
   });
@@ -707,6 +715,15 @@ function renderSubagents() {
       h("span", { class: "muted hint" }, "open one to see it and write to it")),
     h("div", { class: "sub-list" }, rows)));
   el.hidden = false;
+}
+
+/** The model on a subagent's Agent card (it is known once the subagent answers). */
+function setCardModel(toolUseId, model) {
+  const card = state.tools.get(toolUseId);
+  if (card?.model && card.model.textContent !== (model ?? "")) {
+    card.model.textContent = model ?? "";
+    card.model.hidden = !model;
+  }
 }
 
 /** "14:05", the full date on hover. */
@@ -725,6 +742,11 @@ function userBubble(e) {
   if (e.auto === "restart") {
     return h("div", { class: "user-wrap" }, h("div", { class: "msg-user auto", title: e.text },
       icon("refresh", 13), "Picked up again after the Claude engine restarted"), when(e.ts));
+  }
+  // 0.9.0: sent by layr, not you: the turn the usage limit stopped goes on.
+  if (e.auto === "limit") {
+    return h("div", { class: "user-wrap" }, h("div", { class: "msg-user auto", title: e.text },
+      icon("refresh", 13), "Went on after the usage limit"), when(e.ts));
   }
   const el = h("div", { class: `msg-user${e.steer ? " steer" : ""}` });
   if (e.images?.length) {
@@ -925,7 +947,9 @@ function toolCard(e) {
   const summary = toolSummary(e.name, e.input);
   // A subagent's card opens its conversation, where you can write to it too.
   let open = null;
+  let model = null;
   if (e.name === "Agent" || e.name === "Task") {
+    model = h("span", { class: "badge sub-model", title: "The subagent's model", hidden: true });
     open = h("button", { class: "btn ghost small open-sub", title: "Open this subagent's conversation; you can write to it there" },
       "Open");
     open.addEventListener("click", (ev) => {
@@ -936,7 +960,7 @@ function toolCard(e) {
   }
   const el = h("details", { class: "tool" },
     h("summary", {}, chev, toolIcon(e.name), h("span", { class: "name" }, toolLabel(e.name)),
-      h("span", { class: "sum", title: summary }, summary), open, stateEl),
+      h("span", { class: "sum", title: summary }, summary), model, open, stateEl),
   );
   const body = h("div", { class: "body" });
   const children = h("div", { class: "children" });
@@ -950,8 +974,10 @@ function toolCard(e) {
   }
   body.append(children);
   el.append(body);
-  const card = { el, state: stateEl, body, children, name: e.name, done: false, id: e.id };
+  const card = { el, state: stateEl, body, children, name: e.name, done: false, id: e.id, model };
   state.tools.set(e.id, card);
+  const a = model && state.agents.get(e.id);
+  if (a) setCardModel(e.id, agentInfo(a).model);
   return el;
 }
 
@@ -990,15 +1016,18 @@ function todoList(todos) {
       h("span", {}, t.status === "in_progress" && t.activeForm ? t.activeForm : t.content))));
 }
 
+const TURN_END_ICON = { done: "check", failed: "x", paused: "clock" };
+
 function turnEnd(e) {
   const bits = [];
   if (e.status === "done") bits.push("Done");
   else if (e.status === "interrupted") bits.push("Stopped");
+  else if (e.status === "paused") bits.push("Paused for the usage limit");
   else bits.push(`Failed${e.error ? `: ${e.error}` : ""}`);
   if (e.durationMs) bits.push(duration(e.durationMs));
   if (typeof e.costUsd === "number" && e.costUsd > 0) bits.push(money(e.costUsd));
   if (e.usage?.outputTokens) bits.push(`${tokens(e.usage.inputTokens + e.usage.cacheReadTokens + e.usage.cacheWriteTokens)} in · ${tokens(e.usage.outputTokens)} out`);
-  return h("div", { class: `turn-end ${e.status}` }, icon(e.status === "done" ? "check" : e.status === "failed" ? "x" : "stop", 13), bits.join(" · "));
+  return h("div", { class: `turn-end ${e.status}` }, icon(TURN_END_ICON[e.status] ?? "stop", 13), bits.join(" · "));
 }
 
 function duration(ms) {
@@ -1208,7 +1237,8 @@ function setThread(t) {
   }
   $("status-dot").className = `dot ${t.status}`;
   document.body.classList.toggle("busy", isBusy(t));
-  $("status-label").textContent = `${STATUS_LABEL[t.status] ?? t.status}${t.archived ? " · archived" : ""}`;
+  $("status-dot").classList.toggle("paused", Boolean(t.limitPause));
+  $("status-label").textContent = `${statusLabel(t)}${t.archived ? " · archived" : ""}`;
   const ws = t.workspace ?? {};
   const wsEl = $("workspace");
   wsEl.replaceChildren(icon(ws.kind === "worktree" ? "branch" : "folder", 12), ws.kind === "worktree" ? ws.branch ?? "worktree" : ws.branch ? `${short(ws.path)} · ${ws.branch}` : short(ws.path));
@@ -1270,7 +1300,7 @@ function renderWorking() {
   const isBusy = busy(t);
   const el = $("working");
   el.hidden = !isBusy;
-  el.classList.toggle("waiting", t?.status === "waiting");
+  el.classList.toggle("waiting", t?.status === "waiting" || Boolean(t?.limitPause));
   $("stop").hidden = !isBusy;
   $("steer").hidden = !isBusy || !input.value.trim() || Boolean(state.task);
   // 🌙 When away needs the pipeline (state.task is undefined without it). A pipeline that gives the task's toggles
@@ -1293,7 +1323,8 @@ function renderWorking() {
   const tick = () => {
     const secs = state.turnStartedAt ? Math.round((Date.now() - state.turnStartedAt) / 1000) : null;
     $("working-text").textContent =
-      t.status === "waiting" ? `Waiting for your answer${state.sub ? "" : " above"}`
+      t.limitPause ? `Paused for the usage limit · goes on at ${clock(t.limitPause.until)}`
+      : t.status === "waiting" ? `Waiting for your answer${state.sub ? "" : " above"}`
         : `${state.sub ? "Main agent working" : "Working"}${secs != null ? ` · ${secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}` : "…"}`;
   };
   tick();
@@ -1487,6 +1518,8 @@ $("head").addEventListener("contextmenu", (ev) => {
 // ------------------------------------------------------------------ the pipeline task
 
 let taskTimer = null;
+/** The saved draft is in the text box (before that, `boxSent` waits: the box would look empty). */
+let draftReady = false;
 async function refreshTask() {
   const task = await threadTask(state.id);
   state.task = task;
@@ -1495,9 +1528,15 @@ async function refreshTask() {
     input.value = input.value.trim() ? `${input.value.replace(/\s+$/, "")}\n\n${task.unsent}` : task.unsent;
     autosize();
     notify("When away is off: your unsent message is back in the text box", "info");
+    saveDraft();
     void pipelineCall("thread_action", { thread: state.id, action: "unsent_taken" }).catch(() => {});
   }
-  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask(), { composerText, onSent: composerSent });
+  // Away sent what waited from the text box: the box empties, unless it holds something typed after that.
+  if (typeof task?.boxSent === "string" && draftReady) {
+    if (composerText().trim() === task.boxSent.trim()) clearBox();
+    void pipelineCall("thread_action", { thread: state.id, action: "box_sent_taken" }).catch(() => {});
+  }
+  renderTaskStrip($("task"), task ?? null, state.id, () => void refreshTask(), { composerText, onSent: composerSent, syncBox, onBoxed: boxed });
   renderWorking();
   clearTimeout(taskTimer);
   // While there is a pipeline, look again every 10 s (its events may not reach this panel).
@@ -1805,6 +1844,56 @@ function picksArrived(e) {
   renderLatest();
 }
 
+// ------------------------------------------------------------------ the text box's waiting item (🌙)
+// With the task's When away on, Send and Approve leave the text in the box: what waits for Away is the box itself, kept
+// up to date here (pipeline thread_action box_text), sent as it is when Away comes (then `boxSent` empties the box).
+
+let boxTimer = null;
+/** What the images last sent to the box's waiting item were (null: not sent from this panel yet). */
+let boxImages = null;
+const imagesKey = () => state.attachments.map((a) => `${a.mediaType}:${a.data.length}:${a.data.slice(-24)}`).join("|");
+
+/** Bring the box's waiting item up to date with the box (`now`: at once, else after a pause in typing). */
+function syncBox(now = false) {
+  clearTimeout(boxTimer);
+  if (!state.task?.box || state.sub) return Promise.resolve();
+  const go = async () => {
+    const key = imagesKey();
+    const images = key !== boxImages ? state.attachments.map(({ mediaType, data }) => ({ mediaType, data })) : undefined;
+    try {
+      const r = await pipelineCall("thread_action", { thread: state.id, action: "box_text", text: composerText(), ...(images ? { images } : {}) });
+      if (images) boxImages = key;
+      if (r?.boxWaits === false) void refreshTask();
+    } catch (error) {
+      notify(`Pipeline: ${error.message}`, "error");
+    }
+  };
+  if (now) return go();
+  boxTimer = setTimeout(go, 400);
+  return Promise.resolve();
+}
+
+/** Send or Approve left the text in the box: it waits for Away (`images`: they went with it). */
+function boxed({ start = false, images = false } = {}) {
+  boxImages = images ? imagesKey() : null;
+  notify(start ? "Approved: it starts when you go Away, with what the text box holds then (Unapprove takes it back)"
+    : "It waits for Away, as the text box holds it then (Unsend takes it back)", "success");
+  // Approve takes no pictures along: the box's go to its item now.
+  void refreshTask().then(() => !images && state.attachments.length && syncBox(true));
+}
+
+/** What Away sent from the box is in the thread: the box empties. */
+function clearBox() {
+  input.value = "";
+  state.attachments = [];
+  state.picks = { replyId: state.picks.replyId, picked: {} };
+  renderAttachments();
+  renderLatest();
+  renderSlash();
+  autosize();
+  void drafts.clear(state.id);
+}
+
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
 async function send(mode, { away = false } = {}) {
   const typed = input.value;
@@ -1828,9 +1917,15 @@ async function send(mode, { away = false } = {}) {
       notify("It waits in the pipeline's Ready until you go Away", "success");
       void refreshTask();
     } else if (state.task) {
-      // The pipeline holds it back for Away when the task's 🌙 is on.
+      // The box waits for Away already: what it holds then goes; Send now (the strip) sends it at once.
+      if (state.task.box) {
+        await syncBox(true);
+        return notify("It waits for Away already, as the text box holds it then (Send now sends it now)", "info");
+      }
+      // The pipeline holds it back for Away when the task's 🌙 is on: then the text stays in the box (`boxWaits`).
       const waits = awayOn() && !state.task.planning;
-      await pipelineCall("send", { number: state.task.number, text, ...(images.length ? { images } : {}) });
+      const sent = await pipelineCall("send", { number: state.task.number, text, box: true, ...(images.length ? { images } : {}) });
+      if (sent?.boxWaits) return boxed({ images: true });
       heldBack = waits;
       if (waits) notify("It waits in the pipeline's Ready until you go Away", "success");
       if (waits) void refreshTask();
@@ -2196,6 +2291,7 @@ function saveDraft() {
       : null,
     answers: state.answers,
   });
+  void syncBox();
 }
 
 async function loadDraft() {
@@ -2240,6 +2336,7 @@ call("models_list")
   })
   .catch(() => {});
 await loadDraft();
+draftReady = true;
 // The draft's picks belong to a reply: kept only if that reply is still the latest (setLatest drops them otherwise).
 const draftPicks = state.picks;
 state.picks = { replyId: null, picked: {} };

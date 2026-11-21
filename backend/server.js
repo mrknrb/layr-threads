@@ -42,7 +42,13 @@ try {
 const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB_TOKEN });
 // Another Claude account signed in (the accounts plugin switched the live login): its limits, not the old one's.
 const account = new Account({
-  onAccountChanged: () => hub.emit("claude:usage", { limits: account.limits, account: account.limitsAccount ?? null }),
+  onAccountChanged: () => {
+    hub.emit("claude:usage", { limits: account.limits, account: account.limitsAccount ?? null });
+    // Threads paused for the old account's usage limit go on now if this one has room (0.9.0).
+    void Promise.resolve()
+      .then(() => engine.checkLimitPauses())
+      .catch((error) => log("going on after the usage limit:", errorMessage(error)));
+  },
 });
 const buildTimes = new BuildTimes({ dataDir, store });
 const engine = new Engine({ store, hub, account, buildTimes });

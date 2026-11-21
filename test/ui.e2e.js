@@ -202,9 +202,10 @@ try {
   await t2.locator("#task .task-brief summary").click();
   await page.screenshot({ path: path.join(out, "16-task-strip.png") });
   await t2.locator("#task .btn", { hasText: "Land" }).click();
-  check((await t2.locator("#task .confirm-text").textContent()) === "Land #42 on main?", "button asks in the panel");
+  // Land asks only whether you're sure, in a popup.
+  check((await t2.locator(".popup .popup-text").textContent()) === "Land #42? Are you sure?", "Land asks in a popup");
   await page.screenshot({ path: path.join(out, "17-task-confirm.png") });
-  await t2.locator("#task .confirm .btn", { hasText: "Land" }).click();
+  await t2.locator(".popup .btn", { hasText: "Land" }).click();
   await t2.locator("#input").fill("go on");
   await t2.locator("#send").click();
   await page.waitForTimeout(500);
@@ -239,6 +240,47 @@ try {
   await page.waitForTimeout(800);
   check((await t2.locator("#input").inputValue()).includes("after dinner"), "🌙 off: the unsent message is back in the text box", await t2.locator("#input").inputValue());
   check(await page.evaluate(() => !localStorage.getItem("mock-layr.unsent")), "and the pipeline is told it was taken");
+  // Pipeline 0.16: with 🌙 on, Approve and Send leave the text in the box; what waits follows the box's edits.
+  const lastCall = (pred) => page.evaluate((src) => JSON.parse(localStorage.getItem("mock-layr.pipelineCalls") || "[]")
+    .filter(new Function("c", `return ${src}`)).at(-1) ?? null, pred);
+  await page.evaluate(() => {
+    localStorage.setItem("mock-layr.pipelineBox", "1");
+    localStorage.setItem("mock-layr.away", "1");
+  });
+  await t2.locator("#task .btn", { hasText: "Settle" }).click();
+  await t2.locator("#task .btn", { hasText: "Approve" }).waitFor({ timeout: 5_000 });
+  await t2.locator("#input").fill("tonight, with care");
+  await t2.locator("#task .btn", { hasText: "Approve" }).click();
+  await t2.locator("#task .task-box").waitFor({ timeout: 5_000 });
+  check((await t2.locator("#input").inputValue()) === "tonight, with care", "Approve · 🌙: the text stays in the box");
+  const approveCall = await lastCall(`c.args.action === "approve"`);
+  check(approveCall?.args.box === true && /tonight, with care/.test(approveCall?.args.text), "Approve took the box's text, as a box", JSON.stringify(approveCall));
+  await t2.locator("#input").fill("tonight, with care and tests");
+  await page.waitForTimeout(900);
+  const edit = await lastCall(`c.args.action === "box_text"`);
+  check(/and tests/.test(edit?.args.text ?? ""), "an edit reaches what waits", JSON.stringify(edit));
+  await page.screenshot({ path: path.join(out, "17c-box-waits.png") });
+  await t2.locator("#task .btn", { hasText: "Unapprove" }).click();
+  await t2.locator("#task .task-box").waitFor({ state: "hidden", timeout: 5_000 });
+  check((await t2.locator("#input").inputValue()) === "tonight, with care and tests", "Unapprove: the text is still in the box");
+  await t2.locator("#task .btn", { hasText: "Approve" }).click();
+  await t2.locator("#task .task-box").waitFor({ timeout: 5_000 });
+  await t2.locator("#send").click();
+  await page.waitForTimeout(300);
+  check((await t2.locator("#input").inputValue()) === "tonight, with care and tests", "Send while it waits: nothing more is sent, the box stays");
+  // Away sent it: the box empties (it still held what went).
+  await page.evaluate(() => {
+    const box = JSON.parse(localStorage.getItem("mock-layr.box"));
+    localStorage.removeItem("mock-layr.box");
+    localStorage.setItem("mock-layr.boxSent", box.text);
+  });
+  await t2.locator("#task .btn", { hasText: "Settle" }).click();
+  await page.waitForTimeout(800);
+  check((await t2.locator("#input").inputValue()) === "", "Away sent it: the box is empty", await t2.locator("#input").inputValue());
+  check(await page.evaluate(() => localStorage.getItem("mock-layr.boxSent") === null), "and the pipeline is told");
+  await page.evaluate(() => {
+    for (const k of ["mock-layr.pipelineBox", "mock-layr.away", "mock-layr.box", "mock-layr.boxSent"]) localStorage.removeItem(k);
+  });
   await t2.locator("#input").fill("");
   await page.evaluate(() => localStorage.removeItem("mock-layr.pipelineToggles"));
   // The threads list: right-click a row that isn't a task.

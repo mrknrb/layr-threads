@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.7.0",
+  "version": "0.10.0",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions (a list per thread of the plugins it may read and change), with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",

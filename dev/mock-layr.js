@@ -41,6 +41,8 @@
    * Other plugins' tools: none, unless localStorage "mock-layr.pipeline" is "1": then a fake pipeline whose task #42
    * is the thread t_demo1 (calls are logged in localStorage "mock-layr.pipelineCalls"). "mock-layr.pipelineToggles"
    * "1": it gives the task's toggles (pipeline 0.7); 🌙 off gives back "mock-layr.parked" as `unsent`.
+   * "mock-layr.pipelineBox" "1" too (pipeline 0.16): with 🌙 on, Send and Approve wait as the text box's item
+   * ("mock-layr.box": {start, text}); "mock-layr.boxSent" is what Away sent from the box.
    */
   async function fakePlugin(plugin, tool, args) {
     if (plugin === "concepts" && localStorage.getItem("mock-layr.concepts") === "1") return fakeConcepts(tool, args);
@@ -63,6 +65,18 @@
       localStorage.removeItem("mock-layr.unsent");
       return reply({ ok: true });
     }
+    const boxes = toggles && localStorage.getItem("mock-layr.pipelineBox") === "1";
+    const box = JSON.parse(localStorage.getItem("mock-layr.box") || "null");
+    if (boxes && away && ((tool === "send" && args.box) || (tool === "thread_action" && args.action === "approve" && args.box))) {
+      localStorage.setItem("mock-layr.box", JSON.stringify({ start: tool !== "send", text: args.text ?? "" }));
+      return reply({ number: 42, boxWaits: true });
+    }
+    if (boxes && tool === "thread_action" && args.action === "box_text") {
+      if (box) localStorage.setItem("mock-layr.box", JSON.stringify({ ...box, text: args.text }));
+      return reply({ number: 42, boxWaits: !!box });
+    }
+    if (boxes && tool === "thread_action" && args.action === "unbox") localStorage.removeItem("mock-layr.box");
+    if (boxes && tool === "thread_action" && args.action === "box_sent_taken") localStorage.removeItem("mock-layr.boxSent");
     if (toggles && tool === "send" && away) localStorage.setItem("mock-layr.parked", args.text);
     if (tool === "thread_task") {
       if (args.thread !== "t_demo1") return reply(null);
@@ -70,12 +84,18 @@
         ? { toggles: { plan: { on: false, can: false, why: "it has started" }, whenAway: { on: away, can: true } },
           ...(localStorage.getItem("mock-layr.unsent") ? { unsent: localStorage.getItem("mock-layr.unsent") } : {}) }
         : {};
+      if (boxes) {
+        if (box) extra.box = box;
+        if (localStorage.getItem("mock-layr.boxSent") !== null) extra.boxSent = localStorage.getItem("mock-layr.boxSent");
+        extra.buttons = [box ? { id: "unbox", label: box.start ? "Unapprove" : "Unsend" } : { id: "approve", label: "Approve · 🌙", kind: "primary" },
+          { id: "settle", label: "Settle" }];
+      }
       return reply({ ...extra, number: 42, title: "Add sorting to the notes list", column: "stopped", why: "Notes are hard to find in long lists",
         note: "Waits for your answers", link: "layr://pipeline/task/42",
         brief: { what: "A sort button: newest first, or A–Z.", asks: "Whether the order is remembered per notebook.", ifWrong: "The list order looks random." },
         stakes: "low", landing: { state: "waiting", problem: "the base moved on: rebase first" }, planning: false,
         buttons: [{ id: "land", label: "Land", kind: "primary", confirm: "Land #42 on main?" }, { id: "settle", label: "Settle" },
-          { id: "delete", label: "Delete", kind: "danger", confirm: "Delete #42 and its worktree?" }] });
+          { id: "delete", label: "Delete", kind: "danger", confirm: "Delete #42 and its worktree?" }], ...extra });
     }
     return reply({ ok: true });
   }

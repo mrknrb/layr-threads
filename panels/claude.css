@@ -107,6 +107,7 @@ a { color: var(--accent); }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--fg-dim); }
 .dot.running, .dot.starting { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.dot.running.paused { background: var(--warn); animation: none; }
 .dot.waiting { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
 .dot.done { background: var(--ok); }
 .dot.failed { background: var(--danger); }
@@ -173,3 +174,12 @@ pre.block { margin: 0; font-family: var(--font-mono); font-size: 12px; backgroun
   border-radius: 6px; padding: 8px 10px; overflow: auto; max-height: 360px; white-space: pre-wrap;
   word-break: break-word; }
 pre.block.error { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--del-fg); }
+
+/* A small popup over the panel (ui.js confirmPopup). */
+.popup-back { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.35); display: grid; place-items: center; }
+.popup {
+  min-width: 240px; max-width: min(420px, 90vw); padding: 14px 16px; border-radius: 10px; background: var(--bg-2);
+  border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; gap: 12px;
+}
+.popup-text { font-weight: 600; }
+.popup-buttons { display: flex; gap: 6px; justify-content: flex-end; }
