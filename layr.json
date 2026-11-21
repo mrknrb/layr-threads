@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "name": "Claude Code",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Claude Code threads in your projects and worktrees, and on your layr plugins and Chrome extensions (a list per thread of the plugins it may read and change), with approvals and live streaming.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -78,7 +78,7 @@
       { "id": "run", "label": "Start, steer and stop threads; change projects",
         "tools": ["thread_start", "thread_send", "thread_interrupt", "thread_retry", "thread_go_back", "thread_archive",
                   "thread_queue", "project_add", "project_update", "project_remove", "plugin_make", "thread_restore_workspace",
-                  "thread_plugin_add", "thread_plugin_set", "thread_take_back"],
+                  "thread_plugin_add", "thread_plugin_set", "thread_take_back", "thread_plugin_copy"],
         "defaults": { "plugin:pipeline": "allow", "plugin:devtools": "allow", "plugin:care": "allow" } },
       { "id": "approve", "label": "Answer threads' permission requests and change their permissions",
         "tools": ["answer_approval", "thread_update"], "events": ["claude:approval"],

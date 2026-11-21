@@ -285,6 +285,9 @@ export class Engine {
       systemAppend: input.systemAppend || null,
       // 0.7.0: a thread with a plugin list (threadPlugins.js) has `plugins`; other threads have none.
       ...(Array.isArray(input.plugins) ? { plugins: input.plugins } : {}),
+      // 0.12.0: own copies (plugin worktrees) for plugins it may change, and the copies' name.
+      ...(Array.isArray(input.plugins) && input.pluginCopies ? { pluginCopies: true } : {}),
+      ...(Array.isArray(input.plugins) && input.copyName ? { copyName: String(input.copyName) } : {}),
       allowRules: allowedToolsOf(input.allowedTools),
       queue: [],
       queuePaused: false,
@@ -592,6 +595,7 @@ export class Engine {
           : null,
       plugins: Array.isArray(meta.plugins) ? meta.plugins.map(publicRow) : null,
       allowAllPlugins: Array.isArray(meta.plugins) ? Boolean(meta.allowAllPlugins) : undefined,
+      pluginCopies: Array.isArray(meta.plugins) ? Boolean(meta.pluginCopies) : undefined,
       status: meta.status,
       live: Boolean(live),
       cwd: meta.cwd,

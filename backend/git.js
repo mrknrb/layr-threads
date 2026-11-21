@@ -11,6 +11,8 @@ import path from "node:path";
 import { ensureDir, slugify } from "./util.js";
 
 const OUTSIDE_LEAVES = ["mine", "merge"];
+/** 0.12.0: a plugin worktree (a thread's or task's own copy of a plugin): `packages/<id>/work-<name>`. */
+const WORK_PREFIX = "work-";
 
 function samePath(a, b) {
   const norm = (p) => path.resolve(String(p)).replace(/[\/]+$/, "").toLowerCase();
@@ -43,10 +45,13 @@ function worktreeAdmin(repo, dir) {
 export function outsideGitDir(dir) {
   if (existsSync(path.join(dir, ".git"))) return null;
   const leaf = path.basename(dir).toLowerCase();
-  if (!OUTSIDE_LEAVES.includes(leaf)) return null;
+  const work = leaf.startsWith(WORK_PREFIX) && leaf.length > WORK_PREFIX.length;
+  if (!OUTSIDE_LEAVES.includes(leaf) && !work) return null;
   const parent = path.dirname(dir);
   if (leaf === "mine" && existsSync(path.join(parent, "repo.git", "HEAD"))) return path.join(parent, "repo.git");
-  return worktreeAdmin(path.join(parent, "history.git"), dir);
+  // A plugin worktree of a plugin of your own is a worktree of its repo.git.
+  const own = work ? worktreeAdmin(path.join(parent, "repo.git"), dir) : null;
+  return own ?? worktreeAdmin(path.join(parent, "history.git"), dir);
 }
 
 /** `{gitDir, workTree}` for `dir` or the plugin folder it is in, when that folder's history is beside it; else null. */

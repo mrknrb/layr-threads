@@ -1,6 +1,8 @@
-// The threads panel: projects with their Claude threads, live status, search, archive, and the new-thread form.
-// 0.3.2: a switch at the top says what threads work on: Projects (folders), Plugins (layr plugins) or Extensions
-// (plugins that bring a Chrome extension); the form then picks a project, or a plugin / extension (or a new one).
+// The threads panel: every Claude thread in one list (the last changed first), live status, search, archive, and the
+// new-thread form.
+// 0.12.0: no Projects / Plugins / Extensions tabs any more, and threads aren't grouped by project or plugin. Each row
+// says what it works on. The form asks "Works on": a project (then which folder) or plugins (an empty folder whose
+// plugin list fills as you mention plugins with @; an extension is just a plugin that brings one).
 import {
   call,
   defaultModelName,
@@ -29,12 +31,7 @@ import {
 } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
-/** 0.7.0: the form's "no plugin yet" (a thread whose plugin list fills as it goes). */
-const NONE = "__none";
-const MODES = [["projects", "folder", "Projects"], ["plugin", "box", "Plugins"], ["extension", "puzzle", "Extensions"]];
-const savedMode = localStorage.getItem("claude.mode");
 const state = {
-  mode: MODES.some(([m]) => m === savedMode) ? savedMode : "projects",
   targets: [],
   targetsError: null,
   projects: [],
@@ -42,7 +39,6 @@ const state = {
   models: [],
   archived: false,
   query: "",
-  collapsed: new Set(JSON.parse(localStorage.getItem("claude.collapsed") || "[]")),
   active: null,
   usage: null,
 };
@@ -62,7 +58,7 @@ on("claude:threads", (ev) => {
   } else if (ev?.kind === "projects") void loadProjects().then(render);
 });
 on("claude:usage", () => void loadUsage(false));
-// Plugins installed, linked, switched or removed: the Plugins and Extensions lists follow.
+// Plugins installed, linked, switched or removed: the rows' plugin names follow.
 let targetsTimer = null;
 on("layr:packages", (ev) => {
   if (ev?.phase !== "done") return;
@@ -115,230 +111,42 @@ async function loadUsage(refresh) {
 
 // ------------------------------------------------------------------ list
 
-function renderModes() {
-  const nav = $("modes");
-  nav.replaceChildren(...MODES.map(([id, ic, label]) => {
-    const b = h("button", { type: "button", class: state.mode === id ? "on" : "",
-      title: { projects: "Threads in your project folders", plugin: "Threads on your layr plugins",
-        extension: "Threads on your Chrome extensions (plugins that bring one)" }[id] }, icon(ic, 13), label);
-    b.addEventListener("click", () => setMode(id));
-    return b;
-  }));
-  $("add-project").hidden = state.mode !== "projects";
+const isPluginProject = (p) => p.kind === "plugin";
+
+/** 0.12.0: what a thread works on, for its row: the project's name, or the plugins on its list. */
+function whereOf(t) {
+  if (t.kind !== "plugin") {
+    const p = state.projects.find((x) => x.id === t.projectId);
+    return { icon: "folder", text: p?.name ?? "", title: p?.path ?? t.cwd ?? "" };
+  }
+  const ids = Array.isArray(t.plugins) ? t.plugins : t.target?.plugin ? [{ id: t.target.plugin }] : [];
+  const names = ids.map((r) => r.name || state.targets.find((x) => x.id === r.id)?.name || r.id);
+  return { icon: "box", text: names.length ? names.join(", ") : "No plugins yet", title: names.length ? `Plugins: ${names.join(", ")}` : "Plugins: none on its list yet" };
 }
 
-function setMode(mode) {
-  if (state.mode === mode) return;
-  state.mode = mode;
-  localStorage.setItem("claude.mode", mode);
-  closeForm();
-  renderModes();
-  render();
-}
-
-/** Threads matching the search, newest first. */
+/** Every thread (projects and plugins together) matching the search, the last changed first. */
 function visibleThreads() {
   const q = state.query.toLowerCase();
   return [...state.threads.values()]
-    .filter((t) => !q || `${t.title} ${t.preview} ${t.workspace?.branch ?? ""}`.toLowerCase().includes(q))
+    .filter((t) => !q || `${t.title} ${t.preview} ${t.workspace?.branch ?? ""} ${whereOf(t).text}`.toLowerCase().includes(q))
     .sort((a, b) => String(b.lastActivity).localeCompare(String(a.lastActivity)));
 }
 
-const isPluginProject = (p) => p.kind === "plugin";
-
 function render() {
-  if (state.mode !== "projects") return renderTargets();
   const list = $("list");
-  const q = state.query.toLowerCase();
-  const threads = visibleThreads().filter((t) => t.kind !== "plugin");
-  const projects = state.projects.filter((p) => !isPluginProject(p));
-  if (!projects.length) {
-    list.replaceChildren(
-      h("div", { class: "empty" },
-        h("div", { style: { fontSize: "15px", fontWeight: 600, color: "var(--fg)", marginBottom: "6px" } }, "No projects yet"),
-        h("div", {}, "A project is a folder Claude works in. Add one to start a thread."),
-        h("div", { style: { marginTop: "14px" } }, addProjectButton())),
-    );
-    return;
-  }
-  const groups = projects.map((p) => ({ p, threads: threads.filter((t) => t.projectId === p.id) }));
-  const orphans = threads.filter((t) => !projects.some((p) => p.id === t.projectId));
-  if (orphans.length) groups.push({ p: { id: "_", name: "Other", path: "" }, threads: orphans });
-  // Projects with recent activity first.
-  groups.sort((a, b) => String(b.threads[0]?.lastActivity ?? "").localeCompare(String(a.threads[0]?.lastActivity ?? "")));
-  const visible = q ? groups.filter((g) => g.threads.length) : groups;
-  if (!visible.length) {
-    list.replaceChildren(h("div", { class: "empty" }, state.archived ? "No archived threads." : "No threads match."));
-    return;
-  }
-  list.replaceChildren(...visible.map(projectGroup));
-}
-
-function projectGroup({ p, threads }) {
-  const collapsed = state.collapsed.has(p.id) && !state.query;
-  const chev = icon("chevron", 12);
-  chev.classList.add("chev");
-  chev.style.transform = collapsed ? "rotate(0deg)" : "rotate(90deg)";
-  const toggle = () => {
-    state.collapsed.has(p.id) ? state.collapsed.delete(p.id) : state.collapsed.add(p.id);
-    localStorage.setItem("claude.collapsed", JSON.stringify([...state.collapsed]));
-    render();
-  };
-  const add = h("button", { class: "btn ghost small icon-only", title: `New thread in ${p.name}` }, icon("plus", 13));
-  add.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    openForm(p.id);
-  });
-  const remove = h("button", { class: "btn ghost small icon-only", title: "Remove the project from the list (its folder stays)" }, icon("trash", 13));
-  remove.addEventListener("click", async (ev) => {
-    ev.stopPropagation();
-    if (remove.dataset.armed !== "1") {
-      remove.dataset.armed = "1";
-      remove.classList.add("danger");
-      remove.title = "Click again to remove";
-      setTimeout(() => {
-        remove.dataset.armed = "";
-        remove.classList.remove("danger");
-      }, 3000);
-      return;
-    }
-    await call("project_remove", { project: p.id }).catch((e) => notify(e.message, "error"));
-    await loadProjects();
-    render();
-  });
-  const head = h("div", { class: "project-head" }, chev, h("span", { class: "name", title: p.path }, p.name),
-    h("span", { class: "path", title: p.path }, p.path), p.id !== "_" ? h("span", { class: "acts" }, add, remove) : null);
-  chev.addEventListener("click", toggle);
-  head.querySelector(".name").addEventListener("click", toggle);
-  const rows = threads.map(threadRow);
-  return h("div", { class: `project${collapsed ? " collapsed" : ""}` }, head,
-    h("div", { class: "threads" }, rows.length ? rows : h("div", { class: "none" }, state.archived ? "No archived threads" : "No threads yet")));
-}
-
-// ------------------------------------------------------------------ plugins and extensions
-
-const PLACE = {
-  made: ["yours", "Made by you: its own repository, with History and Undo on its page"],
-  changed: ["your copy", "A store plugin with your changes (branch mine): History and Undo on its page"],
-  store: ["store", "As it came from the store: Claude works on your own copy"],
-  inside: ["in a repo", "Linked from a bigger repository: commits go there"],
-};
-
-/** Which list a plugin belongs to: extension when it brings a Chrome extension. */
-const targetMode = (t) => (t.extension ? "extension" : "plugin");
-
-function renderTargets() {
-  const list = $("list");
-  const kind = state.mode;
-  const threads = visibleThreads().filter((t) => t.kind === "plugin");
-  const byPlugin = new Map();
-  for (const t of threads) {
-    // 0.7.0: a thread with a plugin list shows under each plugin on it; with none yet under "No plugin yet".
-    const ids = Array.isArray(t.plugins) ? t.plugins.map((p) => p.id) : [t.target?.plugin ?? "_"];
-    for (const id of ids.length ? ids : ["_"]) {
-      if (!byPlugin.has(id)) byPlugin.set(id, []);
-      byPlugin.get(id).push(t);
-    }
-  }
-  const known = new Map(state.targets.map((t) => [t.id, t]));
-  const groups = [];
-  for (const t of state.targets) {
-    if (targetMode(t) !== kind) continue;
-    const own = byPlugin.get(t.id) ?? [];
-    // Store plugins nobody worked on stay in the form's list, not here.
-    if (t.place === "store" && !own.length) continue;
-    groups.push({ t, threads: own });
-  }
-  for (const [id, own] of byPlugin) {
-    if (known.has(id)) continue;
-    const k = own[0].target?.kind === "extension" ? "extension" : "plugin";
-    if (k !== kind && !(id === "_" && own.some((t) => Array.isArray(t.plugins)))) continue;
-    groups.push({ t: { id, name: id === "_" ? "No plugin yet" : id, place: "made", path: id === "_" ? "" : own[0].cwd,
-      extension: k === "extension", missing: true }, threads: own });
-  }
-  groups.sort((a, b) => String(b.threads[0]?.lastActivity ?? "").localeCompare(String(a.threads[0]?.lastActivity ?? "")) ||
-    a.t.name.localeCompare(b.t.name));
-  const q = state.query;
-  const visible = q ? groups.filter((g) => g.threads.length || g.t.name.toLowerCase().includes(q.toLowerCase())) : groups;
-  const word = kind === "extension" ? "extension" : "plugin";
-  if (!visible.length) {
-    const make = h("button", { class: "btn primary" }, icon("plus", 14), `New ${word}`);
-    make.addEventListener("click", () => openTargetForm({ kind, plugin: null }));
-    const pick = h("button", { class: "btn" }, icon(kind === "extension" ? "puzzle" : "box", 14), `Change an installed one`);
-    pick.addEventListener("click", () => openTargetForm({ kind, plugin: "" }));
+  const threads = visibleThreads();
+  if (!threads.length) {
+    const make = h("button", { class: "btn primary" }, icon("plus", 14), "New thread");
+    make.addEventListener("click", () => openForm());
     list.replaceChildren(h("div", { class: "empty" },
-      q ? h("div", {}, "No threads match.") : [
-        h("div", { style: { fontSize: "15px", fontWeight: 600, color: "var(--fg)", marginBottom: "6px" } },
-          kind === "extension" ? "No Chrome extensions yet" : "No plugins of yours yet"),
-        h("div", {}, kind === "extension"
-          ? "Say what an extension should do and Claude makes it: it runs in layr's web panels, talks to layr's tools, and keeps every version."
-          : "Say what layr should do and Claude makes the plugin, or changes one you have. Every change is kept as a version you can undo."),
-        state.targetsError ? h("div", { class: "muted", style: { marginTop: "8px" } }, state.targetsError) : null,
-        h("div", { style: { marginTop: "14px" } }, make, kind === "plugin" ? pick : null),
+      state.query ? "No threads match." : state.archived ? "No archived threads." : [
+        h("div", { style: { fontSize: "15px", fontWeight: 600, color: "var(--fg)", marginBottom: "6px" } }, "No threads yet"),
+        h("div", {}, "Start one in a project folder, or on your layr plugins: say what Claude should make or change."),
+        h("div", { style: { marginTop: "14px" } }, make),
       ]));
     return;
   }
-  list.replaceChildren(...visible.map(targetGroup));
-}
-
-function targetGroup({ t, threads }) {
-  const key = `t:${t.id}`;
-  const collapsed = state.collapsed.has(key) && !state.query;
-  const chev = icon("chevron", 12);
-  chev.classList.add("chev");
-  chev.style.transform = collapsed ? "rotate(0deg)" : "rotate(90deg)";
-  const toggle = () => {
-    state.collapsed.has(key) ? state.collapsed.delete(key) : state.collapsed.add(key);
-    localStorage.setItem("claude.collapsed", JSON.stringify([...state.collapsed]));
-    render();
-  };
-  const acts = [];
-  if (t.id !== "_") {
-    const add = h("button", { class: "btn ghost small icon-only", title: `New thread on ${t.name}` }, icon("plus", 13));
-    add.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      openTargetForm({ kind: state.mode, plugin: t.id });
-    });
-    acts.push(add);
-  }
-  if (!t.missing && t.linked !== false && (t.place === "made" || t.place === "changed")) {
-    const hist = h("button", { class: "btn ghost small icon-only", title: "History, undo and sharing (its page)" },
-      icon("history", 13));
-    hist.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      void openLink(pluginPageLink(t.id, "history"));
-    });
-    acts.push(hist);
-  }
-  if (t.extension && !t.missing) {
-    const reload = h("button", { class: "btn ghost small icon-only", title: "Reload the extension in layr's web panels" },
-      icon("refresh", 13));
-    reload.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      void reloadExtension(t);
-    });
-    acts.push(reload);
-  }
-  const [placeLabel, placeTitle] = PLACE[t.place] ?? PLACE.made;
-  const head = h("div", { class: "project-head" }, chev, h("span", { class: "name", title: t.description || t.path }, t.name),
-    h("span", { class: `place ${t.place}`, title: placeTitle }, placeLabel),
-    h("span", { class: "path", title: t.path ?? "" }, t.path ?? ""), acts.length ? h("span", { class: "acts" }, acts) : null);
-  chev.addEventListener("click", toggle);
-  head.querySelector(".name").addEventListener("click", toggle);
-  const rows = threads.map(threadRow);
-  return h("div", { class: `project${collapsed ? " collapsed" : ""}` }, head,
-    h("div", { class: "threads" }, rows.length ? rows : h("div", { class: "none" }, state.archived ? "No archived threads" : "No threads yet")));
-}
-
-async function reloadExtension(t) {
-  try {
-    await layr.tools.call("extension_reload", { plugin: t.id }, { plugin: "layr" }).then((r) => {
-      if (r?.isError) throw new Error(r.content?.map((c) => c.text).join("\n") || "Reload failed");
-    });
-    notify(`Reloaded ${t.name}`, "success");
-  } catch (error) {
-    notify(error.message, "error");
-  }
+  list.replaceChildren(...threads.map(threadRow));
 }
 
 function threadRow(t) {
@@ -355,12 +163,14 @@ function threadRow(t) {
       notify(error.message, "error");
     }
   });
+  const where = whereOf(t);
   const row = h("div", { class: `row${state.active === t.id ? " active" : ""}`, tabindex: "0", title: `${statusLabel(t)} · ${t.cwd}` },
     h("span", { class: `dot ${t.status}${t.limitPause ? " paused" : ""}` }),
     h("span", { class: "title" }, t.title),
     h("span", { class: "time" }, relTime(t.lastActivity)),
     h("div", { class: "sub" },
       waiting ? h("span", { class: "badge wait" }, icon("shield", 11), "Needs you") : null,
+      where.text ? h("span", { class: "badge where", title: where.title }, icon(where.icon, 11), where.text) : null,
       ws.kind === "worktree" ? h("span", { class: "badge mono", title: ws.path }, icon("branch", 11), ws.branch ?? "worktree") : null,
       t.folderGone ? h("span", { class: "badge warn", title: `Its folder is gone: ${t.cwd}` }, "gone") : null,
       t.queue?.length ? h("span", { class: "badge" }, `${t.queue.length} queued`) : null,
@@ -393,10 +203,34 @@ async function rowMenu(t, row, ev) {
     phone ? null : { label: "Open folder in VS Code", icon: "code", run: () => openFolderOnPc(t.id, "vscode") },
     phone ? null : { label: "Open folder in File Explorer", icon: "folder_open", run: () => openFolderOnPc(t.id, "explorer") },
     task === null ? { label: "+ Pipeline", icon: "view_kanban", run: () => adoptThread(t.id) } : null,
+    t.kind === "plugin" ? null : { label: "New thread in this project", icon: "add", run: () => openForm({ on: "project", projectId: t.projectId }) },
+    ...pluginItems(t),
     { label: "Rename", icon: "edit", run: () => renameRow(t, row) },
     { label: t.archived ? "Bring back" : "Archive", icon: t.archived ? "unarchive" : "archive", run: () => row.querySelector(".row-acts button")?.click() },
     { label: "Copy link", icon: "link", run: () => copyText(threadLink(t.id), "Link copied") },
   ], ev);
+}
+
+/** A plugin thread's menu items for its plugins: their history page, and reloading the ones that bring an extension. */
+function pluginItems(t) {
+  if (t.kind !== "plugin" || !Array.isArray(t.plugins) || !t.plugins.length) return [];
+  const items = ["-"];
+  for (const p of t.plugins) {
+    if (p.place !== "inside") items.push({ label: `${p.name || p.id}: history and undo`, icon: "history", run: () => openLink(pluginPageLink(p.id, "history")) });
+    if (p.extension) items.push({ label: `${p.name || p.id}: reload its extension`, icon: "refresh", run: () => reloadExtension(p) });
+  }
+  return items;
+}
+
+async function reloadExtension(p) {
+  try {
+    await layr.tools.call("extension_reload", { plugin: p.id }, { plugin: "layr" }).then((r) => {
+      if (r?.isError) throw new Error(r.content?.map((c) => c.text).join("\n") || "Reload failed");
+    });
+    notify(`Reloaded ${p.name || p.id}`, "success");
+  } catch (error) {
+    notify(error.message, "error");
+  }
 }
 
 function renameRow(t, row) {
@@ -462,16 +296,9 @@ $("show-archived").addEventListener("click", async () => {
 });
 $("new").addEventListener("click", () => {
   if (!$("new-form").hidden) return closeForm();
-  if (state.mode === "projects") openForm();
-  else openTargetForm({ kind: state.mode, plugin: NONE });
+  openForm();
 });
-$("add-project").addEventListener("click", () => openForm(null, { addProject: true }));
-
-function addProjectButton() {
-  const b = h("button", { class: "btn primary" }, icon("folder", 14), "Add a project folder");
-  b.addEventListener("click", () => openForm(null, { addProject: true }));
-  return b;
-}
+$("add-project").addEventListener("click", () => openForm({ on: "project", addProject: true }));
 
 // ------------------------------------------------------------------ new thread form
 
@@ -494,8 +321,8 @@ function projectOf(ref) {
 /**
  * Open the new-thread form from panel params: `{new: true}`, or `{prompt, project?}` (the concepts panel opens it so,
  * with a prompt to start from). A form open already is filled again only when its prompt is still empty.
- * 0.3.2: `{new: true, target: "plugin" | "extension", plugin?}` opens it on Plugins or Extensions, on that plugin's id
- * (`"new"`: a new one; left out: no plugin yet, 0.7.0).
+ * `{new: true, target: "plugin" | "extension", plugin?}` opens it on plugins; a plugin id puts that plugin on the
+ * thread's list from the start (`"new"`: Claude makes a new one), left out: an empty list.
  */
 function openFormFrom(params) {
   if (!params?.new && !params?.prompt) return;
@@ -503,26 +330,38 @@ function openFormFrom(params) {
   const typed = $("new-form").querySelector("textarea")?.value.trim();
   if (open && (!params.prompt || typed)) return;
   if (params.target === "plugin" || params.target === "extension") {
-    setMode(params.target);
-    const plugin = params.plugin === "new" ? null : typeof params.plugin === "string" && params.plugin ? params.plugin : NONE;
-    return openTargetForm({ kind: params.target, plugin, prompt: params.prompt });
+    const preset = params.plugin === "new" ? { kind: params.target, plugin: null }
+      : typeof params.plugin === "string" && params.plugin ? { kind: params.target, plugin: params.plugin } : null;
+    return openForm({ on: "plugins", preset, prompt: params.prompt });
   }
-  if (params.project || params.prompt) setMode("projects");
-  else if (state.mode !== "projects") return openTargetForm({ kind: state.mode, plugin: NONE });
   const project = projectOf(params.project);
-  openForm(project?.id, { addProject: Boolean(project?.path), path: project?.path, prompt: params.prompt });
+  openForm({
+    on: params.project || params.prompt ? "project" : undefined,
+    projectId: project?.id, addProject: Boolean(project?.path), path: project?.path, prompt: params.prompt,
+  });
 }
 
-function openForm(projectId, { addProject = false, path: folder = "", prompt: text = "" } = {}) {
+/**
+ * The one new-thread form. "Works on": a project (pick or add its folder; folder or worktree) or plugins (Claude
+ * starts in an empty folder of its own; plugins come onto its list as you or Claude mention them, and it asks before
+ * changing one). `preset` ({kind, plugin}: an id, or null for a new one) starts a plugin thread with that plugin on
+ * its list, allowed to change (other panels open the form so).
+ */
+function openForm({ on: onArg, projectId, addProject = false, path: folder = "", prompt: text = "", preset = null } = {}) {
   const form = $("new-form");
   form.hidden = false;
+  const own = () => state.projects.filter((p) => !isPluginProject(p));
+  const lastOn = localStorage.getItem("claude.lastOn");
+  let on = onArg ?? (addProject || projectId ? "project" : lastOn === "project" || lastOn === "plugins" ? lastOn : own().length ? "project" : "plugins");
   const last = localStorage.getItem("claude.lastProject");
+
   const projectSel = h("select", { class: "select" });
+  const removeProject = h("button", { type: "button", class: "btn ghost small icon-only", title: "Remove this project from the list (its folder stays)" }, icon("trash", 13));
   const pathRow = h("div", { class: "inline-row" });
   const pathInput = h("input", { class: "input", placeholder: "Folder path, e.g. C:\\Users\\me\\code\\my-app" });
   const pathAdd = h("button", { class: "btn small" }, "Add");
   pathRow.append(pathInput, pathAdd);
-  const prompt = h("textarea", { class: "textarea", placeholder: "What should Claude do?  (Ctrl+Enter to start)" });
+  const prompt = h("textarea", { class: "textarea" });
   const model = h("select", { class: "select" });
   const effort = h("select", { class: "select" });
   const mode = h("select", { class: "select" });
@@ -530,8 +369,20 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
   const branch = h("input", { class: "input mono", placeholder: "layr/<from the title>" });
   const existing = h("select", { class: "select" });
   const remember = h("input", { type: "checkbox" });
+  const note = h("div", { class: "target-note" });
+  // 0.12.0: own copies (plugin worktrees): the app runs each plugin as it was until you land the thread's changes.
+  const copies = h("input", { type: "checkbox" });
+  copies.checked = localStorage.getItem("claude.pluginCopies") === "1";
+  const copiesRow = h("label", { class: "muted", style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "center" },
+    title: "Off: Claude changes plugins in the app directly, and you see each change at once. On: each plugin Claude changes gets a copy of its own; the app runs it as it was until you press Land (Try shows it first). Several threads can change one plugin at once." },
+  copies, "Own copies: changes go into the app when you land them");
   let workspace = "project";
 
+  const onButtons = [["project", "folder", "A project"], ["plugins", "box", "Plugins"]].map(([id, ic, label]) => {
+    const b = h("button", { type: "button", title: { project: "Claude works in one of your folders", plugins: "Claude makes or changes your layr plugins (and Chrome extensions, which plugins can bring)" }[id] }, icon(ic, 13), label);
+    b.addEventListener("click", () => setOn(id));
+    return [id, b];
+  });
   const wsButtons = [["project", "folder", "Folder"], ["worktree", "branch", "New worktree"], ["existing", "branch", "Worktree…"]].map(
     ([id, ic, label]) => {
       const b = h("button", { type: "button", title: { project: "Work in the project folder itself", worktree: "A new git worktree on a new branch", existing: "An existing git worktree of the project" }[id] }, icon(ic, 13), label);
@@ -539,14 +390,19 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
       return [id, b];
     },
   );
+  const projectRow = h("div", { class: "field" }, h("span", {}, "Project"), h("div", { class: "inline-row" }, projectSel, removeProject));
+  const wsRow = h("div", { class: "field wide" }, h("span", {}, "Workspace"), h("div", { class: "ws-choice" }, wsButtons.map(([, b]) => b)));
   const wsBranchRow = h("label", { class: "field wide" }, h("span", {}, "Branch"), branch);
   const wsExistingRow = h("label", { class: "field wide" }, h("span", {}, "Worktree"), existing);
+  const titleRow = h("label", { class: "field wide" }, h("span", {}, "Title"), title);
+  const rememberRow = h("label", { class: "muted", style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "center" } }, remember, "Remember model, effort and permissions for this project");
+
   function setWorkspace(id) {
     workspace = id;
     for (const [k, b] of wsButtons) b.classList.toggle("on", k === id);
-    wsBranchRow.hidden = id !== "worktree";
-    wsExistingRow.hidden = id !== "existing";
-    if (id === "existing") void loadWorktrees();
+    wsBranchRow.hidden = on !== "project" || id !== "worktree";
+    wsExistingRow.hidden = on !== "project" || id !== "existing";
+    if (on === "project" && id === "existing") void loadWorktrees();
   }
   async function loadWorktrees() {
     fillSelect(existing, [{ value: "", label: "Loading…" }], "");
@@ -558,32 +414,80 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
       fillSelect(existing, [{ value: "", label: error.message }], "");
     }
   }
-
-  function fillProjects(selected) {
-    fillSelect(projectSel, [...state.projects.filter((p) => !isPluginProject(p)).map((p) => ({ value: p.id, label: p.name })), { value: "__add", label: "+ Add a folder…" }], selected);
-    pathRow.hidden = projectSel.value !== "__add";
+  function setOn(id) {
+    on = id;
+    for (const [k, b] of onButtons) b.classList.toggle("on", k === id);
+    const p = id === "project";
+    projectRow.hidden = !p;
+    pathRow.hidden = !p || projectSel.value !== "__add";
+    wsRow.hidden = !p;
+    titleRow.hidden = !p;
+    rememberRow.hidden = !p;
+    note.hidden = p;
+    copiesRow.hidden = p;
+    setWorkspace(workspace);
+    const presetName = preset ? (preset.plugin ? state.targets.find((t) => t.id === preset.plugin)?.name ?? preset.plugin : `a new ${preset.kind === "extension" ? "extension" : "plugin"}`) : "";
+    note.textContent = preset
+      ? `Starts with ${presetName} on its list, allowed to change. Mention more plugins with @ as you go. Every change is saved as a version you can take back.`
+      : "Claude starts in an empty folder of its own. Plugins you mention with @ it may read, and it asks you before changing one (or making a new one). Every change is saved as a version you can take back.";
+    prompt.placeholder = p ? "What should Claude do?  (Ctrl+Enter to start)"
+      : "For example: make @youtube sort by date, the way @pipeline does, or: a new plugin for my lab notes.  (Ctrl+Enter to start)";
     applyDefaults();
   }
-  /** The options with what "Default" stands for in the project's folder (Claude Code's settings there). */
+
+  function fillProjects(selected) {
+    fillSelect(projectSel, [...own().map((p) => ({ value: p.id, label: p.name })), { value: "__add", label: "+ Add a folder…" }], selected);
+    pathRow.hidden = on !== "project" || projectSel.value !== "__add";
+    removeProject.hidden = projectSel.value === "__add";
+    applyDefaults();
+  }
+  /** The options with what "Default" stands for in the folder Claude starts in (Claude Code's settings there). */
+  const startProject = () => on === "project" ? state.projects.find((x) => x.id === projectSel.value)
+    : state.projects.find(isPluginProject) ?? state.projects[0];
   const shown = () => {
-    const d = state.projects.find((x) => x.id === projectSel.value)?.claudeDefaults ?? {};
+    const d = startProject()?.claudeDefaults ?? {};
     return { defaultName: defaultModelName(state.models, { setting: d.model }), defaultEffort: d.effort ?? null };
   };
   const modelOpts = () => modelOptions(state.models, { defaultName: shown().defaultName });
   const effortOpts = () =>
     effortOptions(state.models, model.value || "default", { defaultEffort: shown().defaultEffort });
   function applyDefaults() {
-    const p = state.projects.find((x) => x.id === projectSel.value);
+    const p = on === "project" ? state.projects.find((x) => x.id === projectSel.value) : null;
     fillSelect(model, modelOpts(), p?.defaultModel ?? "");
     fillSelect(effort, effortOpts(), p?.defaultEffort ?? "");
-    fillSelect(mode, permissionOptions(), p?.defaultPermissionMode ?? "default");
+    // A new plugin: files without asking (commands still ask), as the plugin maker did.
+    fillSelect(mode, permissionOptions(), p?.defaultPermissionMode ?? (preset && !preset.plugin ? "acceptEdits" : "default"));
   }
   projectSel.addEventListener("change", () => {
     pathRow.hidden = projectSel.value !== "__add";
+    removeProject.hidden = projectSel.value === "__add";
     if (projectSel.value === "__add") pathInput.focus();
     else {
       applyDefaults();
       if (workspace === "existing") void loadWorktrees();
+    }
+  });
+  removeProject.addEventListener("click", async () => {
+    if (removeProject.dataset.armed !== "1") {
+      removeProject.dataset.armed = "1";
+      removeProject.classList.add("danger");
+      removeProject.title = "Click again to remove (its folder and threads stay)";
+      setTimeout(() => {
+        removeProject.dataset.armed = "";
+        removeProject.classList.remove("danger");
+        removeProject.title = "Remove this project from the list (its folder stays)";
+      }, 3000);
+      return;
+    }
+    removeProject.dataset.armed = "";
+    removeProject.classList.remove("danger");
+    try {
+      await call("project_remove", { project: projectSel.value });
+      await loadProjects();
+      fillProjects(own()[0]?.id ?? "__add");
+      render();
+    } catch (error) {
+      notify(error.message, "error");
     }
   });
   model.addEventListener("change", () => fillSelect(effort, effortOpts(), effort.value));
@@ -616,32 +520,43 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
   const status = h("span", { class: "muted" });
   cancel.addEventListener("click", closeForm);
   async function submit() {
-    if (projectSel.value === "__add" || !projectSel.value) return notify("Pick or add a project first", "error");
+    if (on === "project" && (projectSel.value === "__add" || !projectSel.value)) return notify("Pick or add a project first", "error");
     if (!prompt.value.trim()) return prompt.focus();
     const args = {
-      project: projectSel.value,
       prompt: prompt.value,
       permissionMode: mode.value,
       ...(model.value ? { model: model.value } : {}),
       ...(effort.value ? { effort: effort.value } : {}),
-      ...(title.value.trim() ? { title: title.value.trim() } : {}),
     };
-    if (workspace === "worktree") {
-      args.workspace = "worktree";
-      if (branch.value.trim()) args.branch = branch.value.trim();
-    } else if (workspace === "existing") {
-      if (!existing.value) return notify("Pick a worktree", "error");
-      args.workspace = { worktreePath: existing.value };
+    if (on === "project") {
+      args.project = projectSel.value;
+      if (title.value.trim()) args.title = title.value.trim();
+      if (workspace === "worktree") {
+        args.workspace = "worktree";
+        if (branch.value.trim()) args.branch = branch.value.trim();
+      } else if (workspace === "existing") {
+        if (!existing.value) return notify("Pick a worktree", "error");
+        args.workspace = { worktreePath: existing.value };
+      }
+    } else {
+      args.target = preset ? { kind: preset.kind, ...(preset.plugin ? { plugin: preset.plugin } : {}) } : { kind: "plugins" };
+      if (copies.checked) args.pluginCopies = true;
+      localStorage.setItem("claude.pluginCopies", copies.checked ? "1" : "0");
     }
     start.disabled = true;
-    status.textContent = workspace === "worktree" ? "Making the worktree…" : "Starting…";
+    const presetTarget = preset?.plugin ? state.targets.find((t) => t.id === preset.plugin) : null;
+    status.textContent = on === "project" && workspace === "worktree" ? "Making the worktree…"
+      : preset && !preset.plugin ? "Making the plugin's folder…" : presetTarget?.place === "store" ? "Making your copy…" : "Starting…";
     try {
       const r = await call("thread_start", args);
-      localStorage.setItem("claude.lastProject", projectSel.value);
-      if (remember.checked) {
-        await call("project_update", { project: projectSel.value, defaultModel: model.value || null, defaultEffort: effort.value || null, defaultPermissionMode: mode.value });
-        await loadProjects();
-      }
+      localStorage.setItem("claude.lastOn", on);
+      if (on === "project") {
+        localStorage.setItem("claude.lastProject", projectSel.value);
+        if (remember.checked) {
+          await call("project_update", { project: projectSel.value, defaultModel: model.value || null, defaultEffort: effort.value || null, defaultPermissionMode: mode.value });
+          await loadProjects();
+        }
+      } else await loadTargets();
       state.threads.set(r.thread.id, r.thread);
       state.active = r.thread.id;
       closeForm();
@@ -666,24 +581,26 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
   closeX.addEventListener("click", closeForm);
   form.replaceChildren(
     h("div", { class: "form-title" }, "New thread", closeX),
-    h("label", { class: "field" }, h("span", {}, "Project"), projectSel),
+    h("div", { class: "field" }, h("span", {}, "Works on"), h("div", { class: "ws-choice" }, onButtons.map(([, b]) => b))),
+    projectRow,
     pathRow,
+    note,
+    copiesRow,
     h("label", { class: "field" }, h("span", {}, "Prompt"), prompt),
     h("div", { class: "grid" },
       h("label", { class: "field" }, h("span", {}, "Model"), model),
       h("label", { class: "field" }, h("span", {}, "Effort"), effort),
       h("label", { class: "field wide" }, h("span", {}, "Permissions"), mode),
-      h("div", { class: "field wide" }, h("span", {}, "Workspace"), h("div", { class: "ws-choice" }, wsButtons.map(([, b]) => b))),
+      wsRow,
       wsBranchRow,
       wsExistingRow,
-      h("label", { class: "field wide" }, h("span", {}, "Title"), title)),
-    h("label", { class: "muted", style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "center" } }, remember, "Remember model, effort and permissions for this project"),
+      titleRow),
+    rememberRow,
     h("div", { class: "form-actions" }, status, cancel, start),
   );
-  const own = state.projects.filter((p) => !isPluginProject(p));
-  const initial = projectId ?? (own.some((p) => p.id === last) ? last : own[0]?.id ?? "__add");
+  const initial = projectId ?? (own().some((p) => p.id === last) ? last : own()[0]?.id ?? "__add");
   fillProjects(addProject ? "__add" : initial);
-  setWorkspace("project");
+  setOn(on);
   if (folder) pathInput.value = folder;
   if (text) prompt.value = String(text);
   prompt.addEventListener("input", () => {
@@ -691,169 +608,11 @@ function openForm(projectId, { addProject = false, path: folder = "", prompt: te
     branch.placeholder = `layr/${slug || "<from the title>"}`;
   });
   if (text) prompt.dispatchEvent(new Event("input"));
-  (addProject || projectSel.value === "__add" ? pathInput : prompt).focus();
-}
-
-// ------------------------------------------------------------------ new thread on a plugin or extension
-
-const EXAMPLES = {
-  plugin: [
-    "A lab notebook: log samples with date, species, notes and a photo, in a sortable table",
-    "Plot the CSV files from my experiments as line charts, with the columns I pick",
-    "A reading list of papers with a status (to read, reading, done) and my notes",
-  ],
-  extension: [
-    "Hide YouTube's recommendations and Shorts, so only the video I opened shows",
-    "Save the article I'm reading to layr with its title, address and the text I selected",
-    "A tool for agents that gives the open page's main text, so Claude can read pages I have open",
-  ],
-};
-
-/**
- * The form for a thread on a plugin or extension. `plugin`: an id, null for a new one, "" for the first installed one,
- * NONE for no plugin yet (0.7.0: the thread starts in an empty folder and its list fills as you mention plugins).
- * Every thread on plugins (0.7.0) has a list: the plugin picked here is on it, allowed to change.
- * A store plugin gets your own copy first (the backend asks layr__plugin_edit); a new one gets its own folder and
- * repository (in layr's home: one folder for each plugin), an extension from a small template that already talks to
- * layr.
- */
-function openTargetForm({ kind, plugin, prompt: text = "" }) {
-  const form = $("new-form");
-  form.hidden = false;
-  const word = kind === "extension" ? "extension" : "plugin";
-  const mine = state.targets.filter((t) => targetMode(t) === kind && t.place !== "store")
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const store = kind === "plugin" ? state.targets.filter((t) => t.place === "store").sort((a, b) => a.name.localeCompare(b.name)) : [];
-  const targetSel = h("select", { class: "select" },
-    h("option", { value: NONE }, "No plugin yet: mention plugins with @ as you go"),
-    h("option", { value: "__new" }, `+ New ${word}`),
-    mine.length ? h("optgroup", { label: kind === "extension" ? "Your extensions" : "Your plugins" },
-      mine.map((t) => h("option", { value: t.id }, t.place === "inside" ? `${t.name} (in its repository)` : t.name))) : null,
-    store.length ? h("optgroup", { label: "Installed from the store (Claude works on your own copy)" },
-      store.map((t) => h("option", { value: t.id }, t.name))) : null);
-  const first = plugin === "" ? (mine[0] ?? store[0])?.id : plugin;
-  targetSel.value = plugin === NONE ? NONE : first && state.targets.some((t) => t.id === first) ? first : "__new";
-  const name = h("input", { class: "input", placeholder: kind === "extension" ? "Name (optional), e.g. Quiet YouTube" : "Name (optional), e.g. Lab notebook" });
-  const nameRow = h("label", { class: "field" }, h("span", {}, "Name"), name);
-  const prompt = h("textarea", { class: "textarea" });
-  const promptLabel = h("span", {});
-  const examples = h("div", { class: "examples" }, EXAMPLES[kind].map((ex) => {
-    const b = h("button", { type: "button", class: "chip" }, ex);
-    b.addEventListener("click", () => {
-      prompt.value = ex;
-      prompt.focus();
-    });
-    return b;
-  }));
-  const note = h("div", { class: "target-note" });
-  const model = h("select", { class: "select" });
-  const effort = h("select", { class: "select" });
-  const mode = h("select", { class: "select" });
-  // What "Default" stands for in the plugins' folder (Claude Code's settings there).
-  const shown = () => {
-    const d = (state.projects.find(isPluginProject) ?? state.projects[0])?.claudeDefaults ?? {};
-    return { defaultName: defaultModelName(state.models, { setting: d.model }), defaultEffort: d.effort ?? null };
-  };
-  const modelOpts = () => modelOptions(state.models, { defaultName: shown().defaultName });
-  const effortOpts = () =>
-    effortOptions(state.models, model.value || "default", { defaultEffort: shown().defaultEffort });
-  fillSelect(model, modelOpts(), "");
-  fillSelect(effort, effortOpts(), "");
-  model.addEventListener("change", () => fillSelect(effort, effortOpts(), effort.value));
-  document.addEventListener("claude-models", () => {
-    if (!model.isConnected) return;
-    fillSelect(model, modelOpts(), model.value);
-    fillSelect(effort, effortOpts(), effort.value);
-  });
-
-  function update() {
-    const isNew = targetSel.value === "__new";
-    const isNone = targetSel.value === NONE;
-    const t = state.targets.find((x) => x.id === targetSel.value);
-    nameRow.hidden = !isNew;
-    examples.hidden = !isNew;
-    promptLabel.textContent = isNew ? "What should it do?" : isNone ? "What should Claude do?" : "What should Claude change?";
-    prompt.placeholder = isNew
-      ? `Say in your own words what the ${word} should do.  (Ctrl+Enter to start)`
-      : isNone ? "For example: make @youtube sort by date, the way @pipeline does.  (Ctrl+Enter to start)"
-        : `For example: add a search box.  (Ctrl+Enter to start)`;
-    // New ones: files without asking (commands still ask), as the plugin maker did; existing ones: as threads do.
-    fillSelect(mode, permissionOptions(), isNew ? "acceptEdits" : (mode.dataset.touched ? mode.value : "default"));
-    note.textContent = isNone
-      ? "Claude starts in an empty folder of its own. Plugins you mention with @ it may read; it asks you before changing one. Every change is saved as a version you can take back."
-      : isNew
-      ? `The new ${word} gets its own folder in layr, with its own history: every turn is saved as a version you can undo (its page › History).`
-      : t?.place === "store"
-        ? `Claude works on your own copy of ${t.name}; layr runs your copy from then on, and store updates are merged into it.`
-        // Its folder only where it isn't layr's own for the plugin (a long path nobody needs to read).
-        : t ? `${PLACE[t.place]?.[1] ?? ""}${t.place === "inside" ? `. Folder: ${t.path}` : ""}` : "";
-  }
-  mode.addEventListener("change", () => (mode.dataset.touched = "1"));
-  targetSel.addEventListener("change", update);
-
-  const start = h("button", { class: "btn primary" }, icon("send", 14), "Start");
-  const cancel = h("button", { class: "btn" }, "Cancel");
-  const status = h("span", { class: "muted" });
-  cancel.addEventListener("click", closeForm);
-  async function submit() {
-    if (!prompt.value.trim()) return prompt.focus();
-    const isNew = targetSel.value === "__new";
-    const target = targetSel.value === NONE ? { kind: "plugins" }
-      : { kind, ...(isNew ? (name.value.trim() ? { name: name.value.trim() } : {}) : { plugin: targetSel.value }) };
-    start.disabled = true;
-    const t = state.targets.find((x) => x.id === targetSel.value);
-    status.textContent = isNew ? `Making the ${word}'s folder…` : t?.place === "store" ? "Making your copy…" : "Starting…";
-    try {
-      const r = await call("thread_start", {
-        target,
-        prompt: prompt.value,
-        permissionMode: mode.value,
-        ...(model.value ? { model: model.value } : {}),
-        ...(effort.value ? { effort: effort.value } : {}),
-      });
-      state.threads.set(r.thread.id, r.thread);
-      state.active = r.thread.id;
-      closeForm();
-      await loadTargets();
-      render();
-      layr.panels.open("thread", { thread: r.thread.id });
-    } catch (error) {
-      notify(error.message, "error");
-      status.textContent = "";
-      start.disabled = false;
-    }
-  }
-  start.addEventListener("click", submit);
-  prompt.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
-      ev.preventDefault();
-      submit();
-    }
-  });
-  form.addEventListener("keydown", (ev) => ev.key === "Escape" && closeForm());
-  const closeX = h("button", { class: "btn ghost small icon-only", title: "Close" }, icon("x", 14));
-  closeX.addEventListener("click", closeForm);
-  form.replaceChildren(
-    h("div", { class: "form-title" }, kind === "extension" ? "New thread on an extension" : "New thread on a plugin", closeX),
-    h("label", { class: "field" }, h("span", {}, kind === "extension" ? "Extension" : "Plugin"), targetSel),
-    note,
-    nameRow,
-    h("label", { class: "field" }, promptLabel, prompt),
-    examples,
-    h("div", { class: "grid" },
-      h("label", { class: "field" }, h("span", {}, "Model"), model),
-      h("label", { class: "field" }, h("span", {}, "Effort"), effort),
-      h("label", { class: "field wide" }, h("span", {}, "Permissions"), mode)),
-    h("div", { class: "form-actions" }, status, cancel, start),
-  );
-  update();
-  if (text) prompt.value = String(text);
-  prompt.focus();
+  (on === "project" && (addProject || projectSel.value === "__add") ? pathInput : prompt).focus();
 }
 
 // ------------------------------------------------------------------ start (last, so every binding above exists)
 
-renderModes();
 await Promise.all([loadProjects(), loadTargets(), loadThreads().catch((e) => notify(`Claude: ${e.message}`, "error"))]);
 render();
 void loadModels().then(() => document.dispatchEvent(new Event("claude-models")));
