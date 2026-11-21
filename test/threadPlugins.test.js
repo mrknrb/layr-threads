@@ -188,7 +188,8 @@ const engine = {
   },
 };
 const plugins = new ThreadPlugins({ engine, hub, store: fakeStore, dataDir: path.join(home, "plugin-data", "claude") });
-threads.t1 = { id: "t1", cwd: work, plugins: [], permissionMode: "default" };
+// t1 changes plugins in the app (started with pluginCopies: false, as Plugin care's fixes are).
+threads.t1 = { id: "t1", cwd: work, plugins: [], permissionMode: "default", pluginCopies: false };
 const t1 = threads.t1;
 
 const added = await plugins.mentioned(t1, "please look at @beta and @unknown");
@@ -267,7 +268,7 @@ check(found[0]?.id === "store1" && found[0].sources.length === 1, "plugin_find",
 // ------------------------------------------------------------------ a thread in a project (0.11.0)
 const project = path.join(tmp, "layr_flutter");
 mkdirSync(project, { recursive: true });
-threads.p1 = { id: "p1", kind: "thread", cwd: project, plugins: [], permissionMode: "default" };
+threads.p1 = { id: "p1", kind: "thread", cwd: project, plugins: [], permissionMode: "default", pluginCopies: false };
 const p1 = threads.p1;
 check(ThreadPlugins.inProject(p1) && !ThreadPlugins.inProject({ kind: "plugin", plugins: [] }) &&
   !ThreadPlugins.inProject({ kind: "thread" }), "a project thread with a list is one in a project");
@@ -300,10 +301,10 @@ check(/isn't a plugin this thread may change/.test(holdError ?? ""), "only a plu
 check(releasedVersion({ sources: [{ versions: [] }, { versions: ["2.0.0", "1.0.0"] }] }) === "2.0.0" &&
   releasedVersion({}) === null, "the newest released version");
 
-// Own copies (0.12.0): with the switch on, a plugin it may change gets a plugin worktree; land, a clash, try, drop.
+// Own copies (0.12.1: always, unless started with pluginCopies: false): a plugin it may change gets a plugin worktree;
+// land, a clash, try, drop.
 threads.c1 = { id: "c1", cwd: work, plugins: [], permissionMode: "default", allowAllPlugins: true };
 const c1 = threads.c1;
-check(plugins.setCopies(c1, true) === true && /switched on own copies/.test(c1.pluginsNote ?? ""), "own copies on, Claude is told");
 const cr = await plugins.requestChange(c1, { plugin: "alpha", why: "x" });
 const cdir = path.join(packages, "alpha", "work-c1");
 check(cr.allowed && cr.plugin.folder === cdir && cr.plugin.copy?.name === "c1" && cr.plugin.copy.branch === "work/c1",
@@ -330,9 +331,17 @@ check(dropped[0].dropped && afterDrop.copy === null && afterDrop.folder === mine
 let noCopy = null;
 await plugins.land(c1, "alpha").catch((e) => { noCopy = e.message; });
 check(/no copy of its own/.test(noCopy ?? ""), "landing without a copy is refused", noCopy);
-plugins.setCopies(c1, false);
-const live = await plugins.requestChange(c1, { plugin: "beta", why: "y" });
-check(live.plugin.copy === null && live.plugin.folder === mineB, "own copies off: changed in the app's folder", live.plugin);
+const reopened = await plugins.requestChange(c1, { plugin: "alpha", why: "again" });
+check(reopened.plugin.copy?.name === "c1", "asking again: a copy again", reopened.plugin);
+threads.c2 = { id: "c2", cwd: work, plugins: [], permissionMode: "default", allowAllPlugins: true, pluginCopies: false };
+const live = await plugins.requestChange(threads.c2, { plugin: "beta", why: "y" });
+check(live.plugin.copy === null && live.plugin.folder === mineB, "started with pluginCopies: false: changed in the app's folder", live.plugin);
+// A held copy (a project thread's change that needs an unpublished core): nothing switches, it stays out of a landing.
+const heldCopy = await plugins.hold(c1, "alpha", "needs a new hub tool");
+check(heldCopy.held && heldCopy.copy && !calls.some((c) => c.name === "layr__plugin_switch" && c.args.plugin === "alpha"),
+  "holding a copy: it just stays out", heldCopy);
+const unheld = await plugins.release(c1, "alpha");
+check(unheld.held === null && unheld.copy, "released: it may land again", unheld);
 
 // Restarts: claude and pipeline wait until no turn runs, claude last.
 let busy = true;

@@ -2072,19 +2072,12 @@ Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.
   const land = copies.length ? h("button", { class: "btn primary small", title: `Put this thread's changes into the app: ${copies.map((p) => p.name).join(", ")}` },
     icon("check", 12), copies.length > 1 ? `Land all (${copies.length})` : `Land ${copies[0].name}`) : null;
   land?.addEventListener("click", () => void copyAction("land", null));
-  const own = h("button", { class: `btn ghost small copies-switch${t.pluginCopies ? " on" : ""}`,
-    title: t.pluginCopies
-      ? "Own copies on: plugins Claude may change get a copy of their own; the app runs them as they were until you land the changes. Click to change plugins in the app directly from now on."
-      : "Own copies off: Claude changes plugins in the app directly (you see each change at once). Click to give plugins Claude may change a copy of their own from now on." },
-  icon(t.pluginCopies ? "branch" : "sparkle", 12), t.pluginCopies ? "Own copies" : "Live");
-  own.addEventListener("click", () => setPlugin({ copies: !t.pluginCopies }));
   el.replaceChildren(...[
     h("span", { class: "plugins-label", title: "What this thread may read and change. Mention a plugin with @ to " +
       "let Claude read it; Claude asks before changing one." }, "Plugins"),
     ...chips,
     t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
     add,
-    own,
     land,
     t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
       "all allowed") : null,

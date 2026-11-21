@@ -286,7 +286,8 @@ export class Engine {
       // 0.7.0: a thread with a plugin list (threadPlugins.js) has `plugins`; other threads have none.
       ...(Array.isArray(input.plugins) ? { plugins: input.plugins } : {}),
       // 0.12.0: own copies (plugin worktrees) for plugins it may change, and the copies' name.
-      ...(Array.isArray(input.plugins) && input.pluginCopies ? { pluginCopies: true } : {}),
+      // 0.12.1: always own copies; false only for a thread that must change plugins in the app (Plugin care's fixes).
+      ...(Array.isArray(input.plugins) && input.pluginCopies === false ? { pluginCopies: false } : {}),
       ...(Array.isArray(input.plugins) && input.copyName ? { copyName: String(input.copyName) } : {}),
       allowRules: allowedToolsOf(input.allowedTools),
       queue: [],
@@ -595,7 +596,7 @@ export class Engine {
           : null,
       plugins: Array.isArray(meta.plugins) ? meta.plugins.map(publicRow) : null,
       allowAllPlugins: Array.isArray(meta.plugins) ? Boolean(meta.allowAllPlugins) : undefined,
-      pluginCopies: Array.isArray(meta.plugins) ? Boolean(meta.pluginCopies) : undefined,
+      pluginCopies: Array.isArray(meta.plugins) ? meta.pluginCopies !== false : undefined,
       status: meta.status,
       live: Boolean(live),
       cwd: meta.cwd,
