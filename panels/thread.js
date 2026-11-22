@@ -30,6 +30,7 @@ import { renderTaskStrip } from "./pipeline.js";
 import { prototypeEmbeds } from "./prototypes.js";
 import { markdown, setMarkdownHooks, toolIcon, toolInputView, toolLabel, toolSummary } from "./render.js";
 import { renderReply } from "./replies.js";
+import { setupSwitcher } from "./switcher.js";
 import {
   adoptThread,
   confirmIn,
@@ -97,12 +98,28 @@ const state = {
 // ------------------------------------------------------------------ start
 
 const layr = await ready();
-state.id = layr.info?.params?.thread ?? layr.info?.state?.thread ?? new URLSearchParams(location.search).get("thread");
+// 0.15.0: the switcher (switcher.js) shows another thread in this panel: the page loads again with ?switched=<id>,
+// and the panel's state keeps it after layr restarts (it wins over the params the panel was opened with).
+const urlParams = new URLSearchParams(location.search);
+state.id = urlParams.get("switched") ?? layr.info?.state?.thread ?? layr.info?.params?.thread ?? urlParams.get("thread");
 if (!state.id) {
   log.replaceChildren(h("div", { class: "empty" }, "No thread to show. Open one from Claude threads."));
   throw new Error("no thread");
 }
 layr.panel.setState({ thread: state.id });
+setupSwitcher($("switch"), {
+  currentId: state.id,
+  onPick: (id) => void switchTo(id),
+  onOpen: (id) => void Promise.resolve(layr.panels.open("thread", { thread: id })).catch((e) => notify(e.message, "error")),
+});
+/** Show thread `id` in this panel: the draft is saved, then the page loads again on that thread. */
+async function switchTo(id) {
+  await Promise.race([drafts.flush(), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
+  await Promise.resolve(layr.panel.setState({ thread: id })).catch(() => {});
+  const url = new URL(location.href);
+  url.searchParams.set("switched", id);
+  location.replace(url.toString());
+}
 state.phone = onPhone();
 $("attach").append(icon("image"));
 $("more").append(icon("more", 16));

@@ -471,3 +471,29 @@ details.tool > summary .sub-model { flex: none; height: 18px; font-size: 11px; }
 
 #skills .c-node { cursor: pointer; align-items: center; }
 #skills .c-node input { margin: 0; }
+
+/* 0.15.0: the thread switcher (switcher.js): a list sliding in from the left over the whole panel. */
+#switch { flex: none; margin-left: -4px; }
+#switch.on { background: var(--bg-3); }
+.sw-back { position: fixed; inset: 0; z-index: 60; display: flex; background: color-mix(in srgb, #000 35%, transparent);
+  animation: sw-fade 0.12s ease-out; }
+.sw-back[hidden] { display: none; }
+.sw-drawer { width: min(320px, 86vw); height: 100%; display: flex; flex-direction: column; background: var(--bg);
+  border-right: 1px solid var(--border); box-shadow: 4px 0 18px color-mix(in srgb, #000 25%, transparent);
+  animation: sw-in 0.16s ease-out; }
+.sw-head { padding: 10px; border-bottom: 1px solid var(--border); }
+.sw-head .input { width: 100%; box-sizing: border-box; }
+.sw-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.sw-list .empty { padding: 18px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+.sw-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px 7px 12px; cursor: pointer; font-size: 13px;
+  border-left: 2px solid transparent; }
+.sw-row:hover, .sw-row:focus-visible { background: var(--bg-2); outline: none; }
+.sw-row.here { background: var(--bg-3); border-left-color: var(--accent); cursor: default; }
+.sw-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-time { flex: none; color: var(--fg-dim); font-size: 11px; }
+.sw-wait { flex: none; color: var(--warn); display: inline-flex; }
+.sw-pop { flex: none; opacity: 0; }
+.sw-row:hover .sw-pop, .sw-pop:focus-visible { opacity: 1; }
+@media (hover: none) { .sw-pop { opacity: 1; } }
+@keyframes sw-in { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes sw-fade { from { opacity: 0; } to { opacity: 1; } }
