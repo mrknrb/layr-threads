@@ -1,24 +1,28 @@
 #app { display: flex; flex-direction: column; height: 100vh; }
 
 #head {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px;
-  border-bottom: 1px solid var(--border); background: var(--bg); min-height: 44px; flex: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 8px 14px;
+  border-bottom: 1px solid var(--border); background: var(--bg); min-height: 44px; flex: none; flex-wrap: wrap;
 }
-.head-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.head-meta { display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 1; font-size: 12px; }
+/* The title takes what is left and shrinks first; on a narrow panel the chips go to a line of their own. */
+.head-main { display: flex; align-items: center; gap: 9px; min-width: min(220px, 100%); flex: 1 1 220px; }
+.head-meta { display: flex; align-items: center; justify-content: flex-end; gap: 6px 10px; min-width: 0; flex: 0 1 auto;
+  flex-wrap: wrap; margin-left: auto; font-size: 12px; }
 #title {
+  min-width: 0; flex: 0 1 auto;
   font-size: 14px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   cursor: text; border-radius: 4px; padding: 1px 4px; margin-left: -4px;
 }
 #title:hover { background: var(--bg-2); }
 #title-edit { font-size: 14px; font-weight: 600; height: 26px; width: min(420px, 60vw); }
 #status-label { font-size: 12px; white-space: nowrap; }
-#workspace { cursor: default; min-width: 0; }
+#workspace { cursor: default; min-width: 0; max-width: 260px; }
 #cost { white-space: nowrap; }
 .ctx { white-space: nowrap; color: var(--fg-dim); font-variant-numeric: tabular-nums; cursor: default; }
 .ctx.high { color: var(--warn); }
 .ctx.full { color: var(--danger); font-weight: 600; }
 @media (max-width: 640px) { #cost { display: none; } }
+@media (max-width: 420px) { #status-label { display: none; } #head { padding: 6px 10px; } }
 
 #scroller { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
 #log { max-width: 860px; margin: 0 auto; padding: 18px 18px 6px; display: flex; flex-direction: column; gap: 10px; }
@@ -324,7 +328,7 @@ a.layr-link { text-decoration-style: dashed; }
 .plugin-chip.held .mode { background: color-mix(in srgb, var(--warning, #c90) 18%, var(--bg)); color: var(--warning, #c90); }
 #task { flex: none; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 6%, var(--bg));
   padding: 7px 14px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
-#task .task-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#task .task-head { display: flex; align-items: center; gap: 4px 8px; min-width: 0; flex-wrap: wrap; }
 #task .task-id { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 600; cursor: pointer;
   white-space: nowrap; }
 #task .task-id:hover { text-decoration: underline; }
