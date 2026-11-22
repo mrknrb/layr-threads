@@ -1819,7 +1819,42 @@ function autosize() {
   $("steer").hidden = !(t && (t.status === "running" || t.status === "waiting")) || !input.value.trim() || Boolean(state.task) ||
     Boolean(state.sub);
 }
+// Sending empties the box; voice typing (Windows Win+H) or another input method still writing a phrase then puts it
+// back once it finishes. `sentText`: what the box held when it emptied, for a few seconds; a phrase of it coming back
+// at once into the empty box goes again. `composing`: an input method is writing into the box now.
+let sentText = null;
+let composing = false;
+input.addEventListener("compositionstart", () => (composing = true));
+input.addEventListener("compositionend", () => (composing = false));
+const SENT_ECHO_MS = 4000;
+
+/** Empty the text box after a send: an input method writing into it stops first (else it writes it back). */
+function emptyInput(sent) {
+  if (composing) {
+    input.blur();
+    composing = false;
+  }
+  input.value = "";
+  sentText = sent?.trim() ? { text: sent.trim(), until: Date.now() + SENT_ECHO_MS } : null;
+}
+
+/** The box got back part of what was just sent, in one go (no typing does that): it goes again. */
+function sentEcho(before) {
+  const now = input.value.trim();
+  if (!sentText || Date.now() > sentText.until || before.trim() || now.length < 4) return false;
+  if (!sentText.text.includes(now)) return false;
+  input.value = "";
+  return true;
+}
+
+let valueBefore = "";
+input.addEventListener("beforeinput", () => (valueBefore = input.value));
 input.addEventListener("input", () => {
+  if (sentEcho(valueBefore)) {
+    autosize();
+    renderSlash();
+    return;
+  }
   autosize();
   renderSlash();
   renderMention();
@@ -1888,7 +1923,7 @@ ${typed}` : prefix) : typed.trim() ? typed : "";
  * stay in the reply, locked, until the message is in the thread (picksArrived).
  */
 function composerSent() {
-  input.value = "";
+  emptyInput(input.value);
   holdPicks();
   renderLatest();
   renderSlash();
@@ -1960,8 +1995,11 @@ function clearBox() {
   void drafts.clear(state.id);
 }
 
+let sending = false;
 /** `away`: it waits in the pipeline's Ready until the user goes Away (a thread that isn't a task becomes one first). */
 async function send(mode, { away = false } = {}) {
+  // A second Enter while the first send is on its way would send the same text again.
+  if (sending) return;
   const typed = input.value;
   // In a subagent's view: to that subagent (the main agent passes it on), never through the pipeline.
   const toSub = state.sub && !away ? subId() : null;
@@ -1972,6 +2010,7 @@ async function send(mode, { away = false } = {}) {
   const images = state.attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const sendBtn = $(away ? "away" : "send");
   sendBtn.disabled = true;
+  sending = true;
   let heldBack = false;
   try {
     let r = null;
@@ -1997,7 +2036,10 @@ async function send(mode, { away = false } = {}) {
       if (waits) void refreshTask();
     }
     else r = await call("thread_send", { thread: state.id, text, images, mode });
-    input.value = "";
+    // What was typed while it was on its way stays (it wasn't sent); only the sent text goes.
+    if (input.value === typed) emptyInput(typed);
+    else if (input.value.startsWith(typed)) input.value = input.value.slice(typed.length).replace(/^\s+/, "");
+    else emptyInput(typed);
     state.attachments = [];
     // Held back for Away: the picks show, locked, until it is sent.
     if (!toSub && (away || heldBack)) holdPicks();
@@ -2006,12 +2048,14 @@ async function send(mode, { away = false } = {}) {
     renderLatest();
     renderSlash();
     autosize();
-    void drafts.clear(state.id);
+    if (input.value.trim()) saveDraft();
+    else void drafts.clear(state.id);
     if (r?.thread) setThread(r.thread);
     scrollToBottom(true);
   } catch (error) {
     notify(error.message, "error");
   } finally {
+    sending = false;
     sendBtn.disabled = false;
     input.focus();
   }
