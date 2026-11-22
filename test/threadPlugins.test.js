@@ -64,6 +64,17 @@ check(/beta's folder/.test(deny("PowerShell", { command: `Remove-Item "${path.jo
 check(deny("Bash", { command: `cd "${mineA.replace(/\\/g, "/")}" && npm test` }) === null, "a command in a plugin it may change");
 check(/gamma's folder/.test(deny("Bash", { command: `rm -rf ${linked}` }) ?? ""), "a command naming a linked plugin's folder");
 check(deny("Bash", { command: "npm test" }) === null, "other commands");
+{
+  // A thread's own copy of a plugin (task 140: `<packages>/<id>/work-<name>`): its commands may name that copy.
+  const copy = path.join(packages, "beta", "work-w1");
+  const cctx = { ...ctx, rows: [rows[0], { id: "beta", name: "Beta", mode: "change", folder: copy }] };
+  check(guardDecision("PowerShell", { command: `Set-Location "${copy}"; npm test` }, cctx) === null,
+    "a command in the thread's own copy of a plugin");
+  check(/beta's folder/.test(guardDecision("Bash", { command: `rm -rf ${path.join(mineB, "x.js")}` }, cctx) ?? ""),
+    "the plugin's mine stays refused when the thread changes a copy");
+  check(/beta's folder/.test(guardDecision("Bash", { command: `ls ${path.join(packages, "beta", "work-w2")}` }, ctx) ?? ""),
+    "another copy stays refused");
+}
 check(/being changed/.test(guardDecision("Edit", { file_path: path.join(mineA, "a") },
   { ...ctx, claim: () => "Alpha is being changed by another thread" }) ?? ""), "a plugin another thread holds");
 
