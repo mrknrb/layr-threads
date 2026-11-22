@@ -55,7 +55,7 @@ function togglePill(task, which, threadId, onDone) {
 async function openTaskPage(task) {
   try {
     const where = { plugin: "pipeline", where: "right", reuse: true };
-    await window.layr.panels.open("task", { task: task.number, toggle: Date.now() }, where);
+    await window.layr.panels.open("task", { task: task.number, from: "thread", toggle: Date.now() }, where);
   } catch {
     const id = /\/task\/([^/?#]+)/.exec(String(task.link ?? ""))?.[1];
     try {
