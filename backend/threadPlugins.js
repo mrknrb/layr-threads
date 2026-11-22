@@ -115,8 +115,13 @@ export function guardDecision(toolName, input, ctx) {
       const root = pathText(ctx.packages);
       let at = text.indexOf(root);
       while (at >= 0) {
-        const id = text.slice(at + root.length).match(/^\/([^/\s"'`;|&)]+)/)?.[1];
-        if (id && !mayTouch(path.join(ctx.packages, id, "mine")) && !mayTouch(path.join(ctx.packages, id, "merge"))) {
+        const [, id, sub] = text.slice(at + root.length).match(/^\/([^/\s"'`;|&)]+)(?:\/([^/\s"'`;|&)]+))?/) ?? [];
+        // 0.14.0: the folder under the plugin's is the one it names (`work-<name>`: a thread's own copy, task 140);
+        // only the plugin's folder itself: allowed when the thread may change a copy of it.
+        const ok = sub
+          ? mayTouch(path.join(ctx.packages, id, sub))
+          : writable.some((r) => isInside(r.folder, path.join(ctx.packages, id)));
+        if (id && !ok) {
           return `That command names ${id}'s folder, which this thread may not change. Read plugins with Read, ` +
             `Glob and Grep; to change one, ask with mcp__${THREAD_SERVER}__plugin_change.`;
         }

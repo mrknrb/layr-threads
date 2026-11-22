@@ -2,7 +2,8 @@
 // (opens the task in the pipeline), its title, the note or why, the brief (what / asks you / if wrong, stakes) to
 // unfold, the landing state and its problem, its toggles (📝 Plan, 🌙 When away: switches, `pipeline__thread_action`
 // toggle_plan / toggle_away; a pipeline without them gives none) and the task's buttons (`pipeline__thread_action`),
-// with an in-panel confirm where a button asks for one. The task comes from `pipeline__thread_task` (ui.js threadTask).
+// with an in-panel confirm where a button asks for one, and ⚙ Task page (the pipeline's Task panel beside the thread).
+// The task comes from `pipeline__thread_task` (ui.js threadTask).
 import { h, icon, notify } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
 import { confirmIn, confirmPopup, onPhone, openLink, pipelineCall } from "./ui.js";
@@ -46,6 +47,25 @@ function togglePill(task, which, threadId, onDone) {
 }
 
 /**
+ * ⚙ Task page: the pipeline's Task panel for this task, beside the thread, one tab that the next one replaces. A
+ * pipeline without a Task panel: its board, with the task's editor open ({edit: id} from its link, else {task: N}).
+ */
+async function openTaskPage(task) {
+  try {
+    const where = { plugin: "pipeline", where: "right", reuse: true };
+    await window.layr.panels.open("task", { task: task.number }, where);
+  } catch {
+    const id = /\/task\/([^/?#]+)/.exec(String(task.link ?? ""))?.[1];
+    try {
+      const params = id ? { edit: decodeURIComponent(id) } : { task: task.number };
+      await window.layr.panels.open("board", params, { plugin: "pipeline" });
+    } catch (error) {
+      notify(`Pipeline: ${error.message ?? error}`, "error");
+    }
+  }
+}
+
+/**
  * Draw `task` into `el` (hidden when null). `onDone()` after a button ran (to refresh). `composer`: {composerText,
  * onSent} of the thread panel: Approve takes the picked answers and typed text along as its `text`; Send now sends
  * them as a message right after what waited for Away. `onSent()` after either took them.
@@ -60,12 +80,15 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
   const column = COLUMN[task.column] ?? task.column ?? "";
   const head = h("button", { class: "task-id", title: "Open the task in the pipeline" }, `#${task.number}`, column ? ` · ${column}` : "");
   head.addEventListener("click", () => task.link && openLink(task.link));
+  const page = h("button", { class: "btn small task-page", title: "Open this task's page beside the thread" },
+    "⚙ Task page");
+  page.addEventListener("click", () => openTaskPage(task));
   const note = task.note || task.why;
   const parts = [
     h("div", { class: "task-head" }, icon("list", 14), head,
       task.planning && !task.toggles ? h("span", { class: "chip warn", title: "The task's thread plans first" }, "planning") : null,
       task.stakes ? h("span", { class: `chip ${STAKES_TONE[task.stakes] ?? ""}`, title: "What's at stake if it's wrong" }, `stakes: ${task.stakes}`) : null,
-      h("span", { class: "task-title" }, inlineMarkdown(task.title ?? ""))),
+      h("span", { class: "task-title" }, inlineMarkdown(task.title ?? "")), page),
   ];
   if (note) parts.push(h("div", { class: "task-note" }, inlineMarkdown(note)));
   // What waits from the text box is still in it, and goes as the box holds it when Away comes.
