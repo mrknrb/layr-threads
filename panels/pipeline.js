@@ -49,11 +49,13 @@ function togglePill(task, which, threadId, onDone) {
 /**
  * ⚙ Task page: the pipeline's Task panel for this task, beside the thread, one tab that the next one replaces. A
  * pipeline without a Task panel: its board, with the task's editor open ({edit: id} from its link, else {task: N}).
+ * 0.15.0: pressed again it closes that tab: a fresh {toggle} goes along, and a Task panel already showing this task
+ * closes itself on it (a new one, or one showing another task, just shows this one).
  */
 async function openTaskPage(task) {
   try {
     const where = { plugin: "pipeline", where: "right", reuse: true };
-    await window.layr.panels.open("task", { task: task.number }, where);
+    await window.layr.panels.open("task", { task: task.number, toggle: Date.now() }, where);
   } catch {
     const id = /\/task\/([^/?#]+)/.exec(String(task.link ?? ""))?.[1];
     try {
@@ -80,7 +82,7 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
   const column = COLUMN[task.column] ?? task.column ?? "";
   const head = h("button", { class: "task-id", title: "Open the task in the pipeline" }, `#${task.number}`, column ? ` · ${column}` : "");
   head.addEventListener("click", () => task.link && openLink(task.link));
-  const page = h("button", { class: "btn small task-page", title: "Open this task's page beside the thread" },
+  const page = h("button", { class: "btn small task-page", title: "Open this task's page beside the thread (press again to close it)" },
     "⚙ Task page");
   page.addEventListener("click", () => openTaskPage(task));
   const note = task.note || task.why;
