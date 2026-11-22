@@ -2,6 +2,7 @@
 // layr plugin "claude": layr's own Claude Code engine. An MCP server on stdio (the core is its client): its tools
 // are what the panels, other plugins (a pipeline) and agents use to run Claude Code threads.
 // Contract: docs/ARCHITECTURE.md > The MCP hub. Environment: LAYR_HUB_URL, LAYR_HUB_TOKEN, LAYR_DATA_DIR...
+import { Skills } from "./skills.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import os from "node:os";
@@ -22,7 +23,7 @@ import { copyNameOf, parseMentions, PluginRestarts, publicRow, ThreadPlugins } f
 import { isPluginsRoot, listTargets, readManifest, TARGET_KINDS } from "./targets.js";
 import { claudeDefaults } from "./defaults.js";
 import { checkFresh, openFolder, openTerminal } from "./terminal.js";
-import { ensureDir, errorMessage, isDirectory, log, titleFromPrompt, truncate } from "./util.js";
+import { ensureDir, errorMessage, isDirectory, log, newId, titleFromPrompt, truncate } from "./util.js";
 
 /** Slash commands every Claude Code session has, shown before it has listed its own. */
 const BUILTIN_COMMANDS = [
@@ -52,6 +53,7 @@ const account = new Account({
 });
 const buildTimes = new BuildTimes({ dataDir, store });
 const engine = new Engine({ store, hub, account, buildTimes });
+engine.skills = new Skills({ hub, dataDir });
 // 0.7.0: threads with a plugin list (threadPlugins.js): their tools, folders, guard and prompt in each session.
 const plugins = new ThreadPlugins({ engine, hub, store, dataDir });
 engine.sessionExtras = (meta) => (ThreadPlugins.has(meta) ? plugins.sessionExtras(meta) : Promise.resolve(null));
@@ -395,9 +397,9 @@ tool(
       .describe("With project (0.11.0): the thread also gets a plugin list, of plugins installed in layr it may read " +
         "and change beside the project (an empty list: none yet, mentions and Claude add them); plugins the prompt " +
         "mentions (@id) go on it to read"),
-    pluginCopies: z.boolean().optional().describe("With target or plugins (0.12.0): plugins it may change get a copy of " +
-      "their own (a plugin worktree): the app runs them as they were until the changes land (thread_plugin_copy), " +
-      "so several threads can change one plugin at once"),
+    pluginCopies: z.boolean().optional().describe("With target or plugins: plugins it may change get a copy of their " +
+      "own (a plugin worktree; the default, 0.12.1): the app runs them as they were until the changes land " +
+      "(thread_plugin_copy). false: it changes them in the app directly (for fixing a plugin that is broken already)"),
   },
   async (a) => {
     if (a.target) return startOnTarget(a);
@@ -418,7 +420,7 @@ async function startOnTarget(a) {
   let main = null;
   // 0.12.0: own copies are named after the thread's folder (its id doesn't exist yet).
   const workDir = ensureDir(plugins.workDir());
-  const copyName = a.pluginCopies ? copyNameOf({ id: path.basename(workDir) }) : null;
+  const copyName = a.pluginCopies !== false ? copyNameOf({ id: path.basename(workDir) }) : null;
   if (a.target.plugin) {
     main = await plugins.resolve({ plugin: a.target.plugin, version: a.target.version, source: a.target.source,
       mode: "change", copy: copyName });
@@ -455,7 +457,7 @@ async function startOnTarget(a) {
     baseRef: undefined,
     kind: "plugin",
     plugins: rows.filter(Boolean),
-    ...(copyName ? { pluginCopies: true, copyName } : {}),
+    ...(copyName ? { copyName } : { pluginCopies: false }),
     extra: { target: "plugins", pluginId: main?.id ?? null, folder: workDir, place: main?.place ?? null, isNew },
   });
   return { thread, folder: main?.folder ?? workDir, pluginId: main?.id ?? null, place: main?.place ?? null, isNew,
@@ -468,9 +470,12 @@ async function startOnTarget(a) {
  */
 async function startInProject(a) {
   const rows = [];
+  // 0.12.1: own copies here too, named before the thread exists.
+  const copyName = a.pluginCopies !== false ? copyNameOf({ id: newId("w") }) : null;
   for (const p of a.plugins) {
     if (rows.some((r) => r.id === p.plugin)) continue;
-    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read" }));
+    rows.push(await plugins.resolve({ plugin: p.plugin, version: p.version, source: p.source, mode: p.change ? "change" : "read",
+      copy: p.change ? copyName : null }));
   }
   const known = new Set((await plugins.catalog().catch(() => [])).map((t) => t.id));
   for (const m of parseMentions(a.prompt)) {
@@ -478,7 +483,7 @@ async function startInProject(a) {
     const row = await plugins.resolve({ plugin: m.id, version: m.version ?? undefined, mode: "read" }).catch(() => null);
     if (row) rows.push(row);
   }
-  const thread = await engine.startThread({ ...a, plugins: rows });
+  const thread = await engine.startThread({ ...a, plugins: rows, ...(copyName ? { copyName } : { pluginCopies: false }) });
   return { thread, plugins: rows.map(publicRow) };
 }
 
@@ -702,7 +707,7 @@ tool(
 
 tool(
   "thread_update",
-  "Change a thread's title, model, effort, thinking or permission mode (a running session switches model and mode at once).",
+  "Change a thread's title, model, effort, thinking, permission mode or skills (a running session switches model and mode at once).",
   {
     thread: threadId,
     title: z.string().optional(),
@@ -710,8 +715,22 @@ tool(
     effort: effort.nullable().optional(),
     thinking: z.boolean().optional(),
     permissionMode: permissionMode.optional(),
+    skillsOff: z.array(z.string()).max(500).optional()
+      .describe("0.13.0: layr skills (<plugin>/<skill>) switched off for this thread only; applies from its next turn"),
   },
   (a) => engine.update(a.thread, a).then((thread) => ({ thread })),
+);
+
+tool(
+  "thread_skills",
+  "0.13.0: the layr skills that are on (Settings > Skills), and whether this thread gets each: {skills: [{id, name, description, plugin, here}]}.",
+  { thread: threadId },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    const off = new Set(meta.skillsOff ?? []);
+    const skills = await engine.skills.list();
+    return { skills: skills.map((s) => ({ id: s.id, name: s.name, description: s.description, plugin: s.plugin, here: !off.has(s.id) })) };
+  },
 );
 
 tool("thread_archive", "Archive a thread (stops it), or bring it back with archived: false.", { thread: threadId, archived: z.boolean().optional() }, (a) => ({
@@ -774,12 +793,9 @@ tool(
     remove: z.boolean().optional(),
     allowAll: z.boolean().optional(),
     held: z.literal(false).optional().describe("false: the app runs the plugin's held-back changes now (0.11.0)"),
-    copies: z.boolean().optional().describe("0.12.0: own copies (plugin worktrees) for the plugins Claude may change " +
-      "from now on (true), or changing them in the app directly (false)"),
   },
   async (a) => {
     const meta = engine.requireThread(a.thread);
-    if (a.copies !== undefined) plugins.setCopies(meta, a.copies);
     if (a.plugin && a.held === false) await plugins.release(meta, a.plugin);
     if (a.allowAll !== undefined) {
       store.updateThread(meta.id, { allowAllPlugins: a.allowAll });

@@ -370,12 +370,6 @@ function openForm({ on: onArg, projectId, addProject = false, path: folder = "",
   const existing = h("select", { class: "select" });
   const remember = h("input", { type: "checkbox" });
   const note = h("div", { class: "target-note" });
-  // 0.12.0: own copies (plugin worktrees): the app runs each plugin as it was until you land the thread's changes.
-  const copies = h("input", { type: "checkbox" });
-  copies.checked = localStorage.getItem("claude.pluginCopies") === "1";
-  const copiesRow = h("label", { class: "muted", style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "center" },
-    title: "Off: Claude changes plugins in the app directly, and you see each change at once. On: each plugin Claude changes gets a copy of its own; the app runs it as it was until you press Land (Try shows it first). Several threads can change one plugin at once." },
-  copies, "Own copies: changes go into the app when you land them");
   let workspace = "project";
 
   const onButtons = [["project", "folder", "A project"], ["plugins", "box", "Plugins"]].map(([id, ic, label]) => {
@@ -424,12 +418,11 @@ function openForm({ on: onArg, projectId, addProject = false, path: folder = "",
     titleRow.hidden = !p;
     rememberRow.hidden = !p;
     note.hidden = p;
-    copiesRow.hidden = p;
     setWorkspace(workspace);
     const presetName = preset ? (preset.plugin ? state.targets.find((t) => t.id === preset.plugin)?.name ?? preset.plugin : `a new ${preset.kind === "extension" ? "extension" : "plugin"}`) : "";
     note.textContent = preset
       ? `Starts with ${presetName} on its list, allowed to change. Mention more plugins with @ as you go. Every change is saved as a version you can take back.`
-      : "Claude starts in an empty folder of its own. Plugins you mention with @ it may read, and it asks you before changing one (or making a new one). Every change is saved as a version you can take back.";
+      : "Claude starts in an empty folder of its own. Plugins you mention with @ it may read, and it asks you before changing one (or making a new one). It changes its own copy of each plugin: the app runs the plugin as it was until you press Land (Try shows it first).";
     prompt.placeholder = p ? "What should Claude do?  (Ctrl+Enter to start)"
       : "For example: make @youtube sort by date, the way @pipeline does, or: a new plugin for my lab notes.  (Ctrl+Enter to start)";
     applyDefaults();
@@ -540,8 +533,6 @@ function openForm({ on: onArg, projectId, addProject = false, path: folder = "",
       }
     } else {
       args.target = preset ? { kind: preset.kind, ...(preset.plugin ? { plugin: preset.plugin } : {}) } : { kind: "plugins" };
-      if (copies.checked) args.pluginCopies = true;
-      localStorage.setItem("claude.pluginCopies", copies.checked ? "1" : "0");
     }
     start.disabled = true;
     const presetTarget = preset?.plugin ? state.targets.find((t) => t.id === preset.plugin) : null;
@@ -585,7 +576,6 @@ function openForm({ on: onArg, projectId, addProject = false, path: folder = "",
     projectRow,
     pathRow,
     note,
-    copiesRow,
     h("label", { class: "field" }, h("span", {}, "Prompt"), prompt),
     h("div", { class: "grid" },
       h("label", { class: "field" }, h("span", {}, "Model"), model),

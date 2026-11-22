@@ -1745,6 +1745,71 @@ on("concepts:changed", () => {
   scheduleConcepts(2000);
 });
 
+// ------------------------------------------------------------------ skills
+
+// 0.13.0: the layr skills that are on (Settings > Skills) and whether this thread gets each (`thread_skills`): a
+// ✦ N chip in the header and a list under it with a switch each (`thread_update {skillsOff}`, from the next turn).
+// Hidden with no skills, or with a core from before skills.
+async function loadSkills() {
+  try {
+    const r = await call("thread_skills", { thread: state.id });
+    state.skills = Array.isArray(r?.skills) ? r.skills : [];
+  } catch {
+    state.skills = [];
+  }
+  renderSkills();
+}
+
+function renderSkills() {
+  const skills = state.skills || [];
+  const chip = $("skills-chip");
+  const drawer = $("skills");
+  chip.hidden = !skills.length;
+  if (!skills.length) {
+    drawer.hidden = true;
+    return;
+  }
+  const here = skills.filter((s) => s.here).length;
+  chip.textContent = `✦ ${here}${here === skills.length ? "" : `/${skills.length}`}`;
+  chip.title = `This thread gets ${here} of the ${skills.length} layr skill${skills.length === 1 ? "" : "s"} that are on`;
+  chip.classList.toggle("on", !drawer.hidden);
+  if (drawer.hidden) return;
+  const close = h("button", { class: "btn ghost small icon-only", title: "Close" }, icon("x", 13));
+  close.addEventListener("click", () => chip.click());
+  const manage = h("button", { class: "btn ghost small", title: "Switch skills on or off for every agent" }, "Settings › Skills");
+  manage.addEventListener("click", () => notify("Skills for every agent are in Settings › Skills"));
+  drawer.replaceChildren(
+    h("div", { class: "c-head" }, `Skills this thread gets (from its next turn) · ${here}/${skills.length}`,
+      h("span", { class: "grow" }), manage, close),
+    ...skills.map((s) => {
+      const box = h("input", { type: "checkbox" });
+      box.checked = Boolean(s.here);
+      box.addEventListener("change", async () => {
+        const off = skills.filter((x) => (x.id === s.id ? !box.checked : !x.here)).map((x) => x.id);
+        try {
+          await call("thread_update", { thread: state.id, skillsOff: off });
+          s.here = box.checked;
+        } catch (error) {
+          box.checked = !box.checked;
+          notify(error.message, "error");
+        }
+        renderSkills();
+      });
+      return h("label", { class: "c-node", title: s.description || s.name },
+        box, h("span", { class: "c-title" }, s.name), h("span", { class: "c-did" }, s.plugin),
+        s.description ? h("span", { class: "c-note" }, s.description) : null);
+    }),
+  );
+}
+
+$("skills-chip").addEventListener("click", () => {
+  const drawer = $("skills");
+  drawer.hidden = !drawer.hidden;
+  renderSkills();
+  if (!drawer.hidden) void loadSkills();
+});
+on("layr:skills", () => void loadSkills());
+
 // ------------------------------------------------------------------ composer
 
 function autosize() {
@@ -2072,19 +2137,12 @@ Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.
   const land = copies.length ? h("button", { class: "btn primary small", title: `Put this thread's changes into the app: ${copies.map((p) => p.name).join(", ")}` },
     icon("check", 12), copies.length > 1 ? `Land all (${copies.length})` : `Land ${copies[0].name}`) : null;
   land?.addEventListener("click", () => void copyAction("land", null));
-  const own = h("button", { class: `btn ghost small copies-switch${t.pluginCopies ? " on" : ""}`,
-    title: t.pluginCopies
-      ? "Own copies on: plugins Claude may change get a copy of their own; the app runs them as they were until you land the changes. Click to change plugins in the app directly from now on."
-      : "Own copies off: Claude changes plugins in the app directly (you see each change at once). Click to give plugins Claude may change a copy of their own from now on." },
-  icon(t.pluginCopies ? "branch" : "sparkle", 12), t.pluginCopies ? "Own copies" : "Live");
-  own.addEventListener("click", () => setPlugin({ copies: !t.pluginCopies }));
   el.replaceChildren(...[
     h("span", { class: "plugins-label", title: "What this thread may read and change. Mention a plugin with @ to " +
       "let Claude read it; Claude asks before changing one." }, "Plugins"),
     ...chips,
     t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
     add,
-    own,
     land,
     t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
       "all allowed") : null,
@@ -2406,4 +2464,5 @@ if (draftPicks.replyId && state.latest?.entry.id === draftPicks.replyId) {
 void refreshTask();
 void loadChanges();
 void loadConcepts();
+void loadSkills();
 input.focus();

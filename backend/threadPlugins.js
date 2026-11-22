@@ -153,7 +153,7 @@ export function publicRow(r) {
 export function pluginsPrompt({ rows, workDir, hubUrl, project = false }) {
   const list = rows.length
     ? rows.map((r) => `- ${r.name} (id "${r.id}"${r.version ? `, version ${r.version}` : ""}): ` +
-      `${r.mode === "change" ? "you may change it" : "read only"}${r.held ? `, held back (the app runs ${r.held.version})` : ""}` +
+      `${r.mode === "change" ? "you may change it" : "read only"}${r.held ? (r.held.version ? `, held back (the app runs ${r.held.version})` : ", held back (it stays out of the app until the person lands it)") : ""}` +
       `${r.copy ? ", in your own copy (the app runs the plugin as it was until the person lands your changes)" : ""}` +
       `; folder ${r.folder}`).join("\n")
     : "- (none yet)";
@@ -203,8 +203,9 @@ throws it away with Drop), on the plugin in the thread's bar.` : ""}`;
 function projectPluginsPrompt({ list, workDir }) {
   return `# Installed layr plugins in this thread
 Besides this project (${workDir}), this thread can change the layr plugins installed in the layr app the person runs.
-Their source is not in this folder: each plugin's files are its folder in layr's home, which the app runs from, so a
-plugin change goes live in the person's app when your turn ends. The project's own files work as always.
+Their source is not in this folder: each plugin you change gets your own copy in layr's home (its folder on the
+list); the app keeps running the plugin as it was until the person lands your changes (with this thread's task, or
+with Land on the plugin in the thread's bar). The project's own files work as always.
 
 ## Which plugins: the thread's list
 ${list}
@@ -214,17 +215,15 @@ ${list}
 - To change one: \`mcp__${THREAD_SERVER}__plugin_change\` { "plugin": "<id>", "why": "<in plain words>" }, and wait for the
   answer. A new plugin: { "new": { "name": "..." } }. Write plugins only in their folders on the list, never into this
   project's \`plugins/\` folder (a plugin there that has moved to its own repository is gone from it).
-- A plugin's history is layr's: don't run git in a plugin's folder. After each turn layr saves each changed plugin as
-  a version (the person can take back everything this thread changed), and restarts the ones with a backend (the
-  claude and pipeline plugins only once no thread is running, as they run the threads).
+- A plugin's history is layr's: don't run git in a plugin's folder. After each turn layr saves each copy you changed
+  (the person can drop it, try it in the app, or land it).
 
 ## A plugin change that needs this project's core
 The app runs the published layr core, not this worktree's. When a plugin change calls something only this project's
-unpublished core has (a new JSON-RPC method, hub tool, manifest field or panel SDK function), the person's app would
-break. Then, right after changing it, call \`mcp__${THREAD_SERVER}__plugin_hold\` { "plugin": "<id>", "why": "<what it
-needs>" }: the app goes on running the plugin's released version, your changes stay saved in its folder, and the
-person switches them on once the app version with the new core is installed. A change that works with the published
-core (or checks for the new ability first) needs no hold.
+unpublished core has (a new JSON-RPC method, hub tool, manifest field or panel SDK function), landing it would break
+the person's app. Then call \`mcp__${THREAD_SERVER}__plugin_hold\` { "plugin": "<id>", "why": "<what it needs>" }: your
+copy stays out of the app when the task lands, and the person lands it once the app version with the new core is
+installed. A change that works with the published core (or checks for the new ability first) needs no hold.
 
 ## When you are done
 Say what changed in this project and in which plugins, and which plugin changes are held back.`;
@@ -318,6 +317,12 @@ async function runJob({ id, run }) {
 }
 
 /** A plugin's newest released version on this PC (its sources' versions, newest first), or null. */
+/** 0.12.1: does the thread change plugins in own copies? Always, unless it was started with `pluginCopies: false`. */
+export const copiesOn = (meta) => meta?.pluginCopies !== false;
+
+/** A row it may change that should be an own copy but isn't (changed in the app before, or its copy was dropped). */
+const needsCopy = (meta, row) => copiesOn(meta) && row.mode === "change" && !row.copy && !row.isNew && row.place !== "inside";
+
 /** 0.12.0: the name of a thread's own copies of plugins (plugin worktrees `work-<name>`): its copy name, or its id. */
 export function copyNameOf(meta) {
   return String(meta?.copyName ?? meta?.id ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 48);
@@ -423,7 +428,8 @@ export class ThreadPlugins {
       place = place === "store" ? "changed" : place;
       copyRow = { name: copy, branch: r?.branch ?? null, base: r?.base ?? null, trying: false };
       this.catalogCache = null;
-    } else if (mode === "change" && (place === "store" || other)) {
+    } else if (mode === "change" && (place === "store" || other ||
+      (place === "changed" && path.basename(String(folder ?? "")).toLowerCase() !== "mine"))) {
       if (other && !(await this.coreKeepsGitOutside())) {
         throw new Error("Building on another version needs a newer layr: update the app first");
       }
@@ -459,6 +465,14 @@ export class ThreadPlugins {
     const row = (meta.plugins ?? []).find((r) => r.id === plugin);
     if (!row || row.mode !== "change") throw new Error(`${plugin} isn't a plugin this thread may change`);
     if (row.held) return publicRow(row);
+    if (row.copy) {
+      // 0.12.1: an own copy isn't in the app anyway: held, it stays out when the thread's task lands.
+      const held = { version: null, why: why ? String(why) : null, at: nowIso() };
+      const rows = (meta.plugins ?? []).map((r) => (r.id === plugin ? { ...r, held } : r));
+      this.store.updateThread(meta.id, { plugins: rows });
+      this.engine.emitThread(meta);
+      return publicRow({ ...row, held });
+    }
     const t = (await this.catalog(true)).find((x) => x.id === plugin);
     const version = row.base ?? releasedVersion(t);
     if (!version) throw new Error(`${row.name} has no released version on this PC to run instead: it can't be held back`);
@@ -475,8 +489,13 @@ export class ThreadPlugins {
   async release(meta, plugin) {
     const row = (meta.plugins ?? []).find((r) => r.id === plugin);
     if (!row?.held) throw new Error(`${plugin} isn't held back in this thread`);
-    if (row.place === "made") await this.hub.call("layr__packages_link", { path: row.folder });
-    else await this.hub.call("layr__plugin_switch", { plugin, mine: true });
+    if (row.copy) {
+      // 0.12.1: a held copy: it may land again (Land, or its task's Land).
+    } else if (row.place === "made") {
+      await this.hub.call("layr__packages_link", { path: row.folder });
+    } else {
+      await this.hub.call("layr__plugin_switch", { plugin, mine: true });
+    }
     this.catalogCache = null;
     const rows = (meta.plugins ?? []).map((r) => (r.id === plugin ? { ...r, held: null } : r));
     this.store.updateThread(meta.id, {
@@ -503,10 +522,11 @@ export class ThreadPlugins {
     if (!ThreadPlugins.has(meta)) throw new Error("This thread works in one folder: start a new thread to use a plugin list");
     if (!PLUGIN_MODES.includes(mode)) throw new Error(`mode is read or change, not ${mode}`);
     const had = (meta.plugins ?? []).find((r) => r.id === plugin);
-    if (had && !newPlugin && !version && !source && (had.mode === mode || (mode === "read" && had.mode === "change"))) {
+    if (had && !newPlugin && !version && !source && (had.mode === mode || (mode === "read" && had.mode === "change")) &&
+      !(mode === "change" && needsCopy(meta, had))) {
       return publicRow(had);
     }
-    const copy = meta.pluginCopies && mode === "change" ? copyNameOf(meta) : null;
+    const copy = copiesOn(meta) && mode === "change" ? copyNameOf(meta) : null;
     const row = await this.resolve({ plugin, version, source, mode, newPlugin, by, copy });
     const note = by === "you"
       ? `The person ${had ? "changed" : "added"} ${row.name} (${row.id}) ${row.mode === "change" ? "for you to change" : "for you to read"}` +
@@ -567,7 +587,7 @@ export class ThreadPlugins {
     if (!t) throw new Error(`No installed plugin ${plugin} (plugin_find lists them)`);
     const had = (meta.plugins ?? []).find((r) => r.id === plugin);
     const sameVersion = !version || version === had?.version;
-    if (had?.mode === "change" && sameVersion && !source) return { allowed: true, plugin: publicRow(had) };
+    if (had?.mode === "change" && sameVersion && !source && !needsCopy(meta, had)) return { allowed: true, plugin: publicRow(had) };
     if (!meta.allowAllPlugins) {
       const answer = await this.engine.askUser(meta, {
         kind: "plugin",
@@ -583,27 +603,15 @@ export class ThreadPlugins {
       }
       if (answer.decision === "allow_always") this.store.updateThread(meta.id, { allowAllPlugins: true });
     }
-    const copy = meta.pluginCopies ? copyNameOf(meta) : null;
+    const copy = copiesOn(meta) ? copyNameOf(meta) : null;
     const row = await this.resolve({ plugin, version, source, mode: "change", by: "claude", copy });
     this.put(meta, row, null);
     return { allowed: true, plugin: publicRow(row) };
   }
 
   // ---------------------------------------------------------------- own copies (0.12.0, plugin worktrees)
-
-  /** Own copies on or off for the plugins this thread is allowed to change from now on. */
-  setCopies(meta, on) {
-    const pluginCopies = Boolean(on);
-    if (Boolean(meta.pluginCopies) === pluginCopies) return pluginCopies;
-    const note = pluginCopies
-      ? "The person switched on own copies: plugins you are allowed to change from now on get a copy of their own " +
-        "(the app runs them as they were until the person lands your changes)."
-      : "The person switched off own copies: plugins you are allowed to change from now on are changed in the app " +
-        "directly. Copies you have stay until they are landed or dropped.";
-    this.store.updateThread(meta.id, { pluginCopies, pluginsNote: addNote(meta.pluginsNote, note) });
-    this.engine.emitThread(meta);
-    return pluginCopies;
-  }
+  // 0.12.1: always, so a half-finished change never breaks the plugin the person uses. Only a thread started with
+  // `pluginCopies: false` (Plugin care's fixes of a plugin that is broken already) changes plugins in the app.
 
   /** The rows with an own copy (of `plugin`, or all). */
   copies(meta, plugin) {
@@ -615,7 +623,7 @@ export class ThreadPlugins {
   /** The row after its copy landed or was dropped: a fresh copy (own copies still on, `reopen`), else the app's folder. */
   async after(meta, row, reopen) {
     this.catalogCache = null;
-    if (reopen && meta.pluginCopies) {
+    if (reopen && copiesOn(meta)) {
       return this.resolve({ plugin: row.id, mode: "change", by: row.by ?? "you", copy: row.copy.name });
     }
     const t = (await this.catalog(true)).find((x) => x.id === row.id);
@@ -638,7 +646,8 @@ export class ThreadPlugins {
     const results = [];
     const next = new Map();
     const notes = [];
-    for (const row of this.copies(meta, plugin)) {
+    // A held copy (it needs a core the app doesn't have yet) stays out of a landing of every copy.
+    for (const row of this.copies(meta, plugin).filter((r) => plugin || !r.held)) {
       const r = await this.hub.call("layr__plugin_worktree_land", { plugin: row.id, name: row.copy.name });
       if (r?.landed) {
         const after = await this.after(meta, row, reopen);
