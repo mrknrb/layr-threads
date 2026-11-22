@@ -1745,6 +1745,71 @@ on("concepts:changed", () => {
   scheduleConcepts(2000);
 });
 
+// ------------------------------------------------------------------ skills
+
+// 0.13.0: the layr skills that are on (Settings > Skills) and whether this thread gets each (`thread_skills`): a
+// ✦ N chip in the header and a list under it with a switch each (`thread_update {skillsOff}`, from the next turn).
+// Hidden with no skills, or with a core from before skills.
+async function loadSkills() {
+  try {
+    const r = await call("thread_skills", { thread: state.id });
+    state.skills = Array.isArray(r?.skills) ? r.skills : [];
+  } catch {
+    state.skills = [];
+  }
+  renderSkills();
+}
+
+function renderSkills() {
+  const skills = state.skills || [];
+  const chip = $("skills-chip");
+  const drawer = $("skills");
+  chip.hidden = !skills.length;
+  if (!skills.length) {
+    drawer.hidden = true;
+    return;
+  }
+  const here = skills.filter((s) => s.here).length;
+  chip.textContent = `✦ ${here}${here === skills.length ? "" : `/${skills.length}`}`;
+  chip.title = `This thread gets ${here} of the ${skills.length} layr skill${skills.length === 1 ? "" : "s"} that are on`;
+  chip.classList.toggle("on", !drawer.hidden);
+  if (drawer.hidden) return;
+  const close = h("button", { class: "btn ghost small icon-only", title: "Close" }, icon("x", 13));
+  close.addEventListener("click", () => chip.click());
+  const manage = h("button", { class: "btn ghost small", title: "Switch skills on or off for every agent" }, "Settings › Skills");
+  manage.addEventListener("click", () => notify("Skills for every agent are in Settings › Skills"));
+  drawer.replaceChildren(
+    h("div", { class: "c-head" }, `Skills this thread gets (from its next turn) · ${here}/${skills.length}`,
+      h("span", { class: "grow" }), manage, close),
+    ...skills.map((s) => {
+      const box = h("input", { type: "checkbox" });
+      box.checked = Boolean(s.here);
+      box.addEventListener("change", async () => {
+        const off = skills.filter((x) => (x.id === s.id ? !box.checked : !x.here)).map((x) => x.id);
+        try {
+          await call("thread_update", { thread: state.id, skillsOff: off });
+          s.here = box.checked;
+        } catch (error) {
+          box.checked = !box.checked;
+          notify(error.message, "error");
+        }
+        renderSkills();
+      });
+      return h("label", { class: "c-node", title: s.description || s.name },
+        box, h("span", { class: "c-title" }, s.name), h("span", { class: "c-did" }, s.plugin),
+        s.description ? h("span", { class: "c-note" }, s.description) : null);
+    }),
+  );
+}
+
+$("skills-chip").addEventListener("click", () => {
+  const drawer = $("skills");
+  drawer.hidden = !drawer.hidden;
+  renderSkills();
+  if (!drawer.hidden) void loadSkills();
+});
+on("layr:skills", () => void loadSkills());
+
 // ------------------------------------------------------------------ composer
 
 function autosize() {
@@ -2399,4 +2464,5 @@ if (draftPicks.replyId && state.latest?.entry.id === draftPicks.replyId) {
 void refreshTask();
 void loadChanges();
 void loadConcepts();
+void loadSkills();
 input.focus();

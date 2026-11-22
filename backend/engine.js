@@ -526,6 +526,15 @@ export class Engine {
       changes.thinking = Boolean(patch.thinking);
       if (live) live.needsRestart = true;
     }
+    if (patch.skillsOff !== undefined) {
+      const next = [...new Set((patch.skillsOff ?? []).filter((x) => typeof x === "string" && x.includes("/")))].sort();
+      const now = [...(meta.skillsOff ?? [])].sort();
+      if (JSON.stringify(next) !== JSON.stringify(now)) {
+        changes.skillsOff = next;
+        // Skills come with the Claude Code process: the next turn starts a new one.
+        if (live) live.needsRestart = true;
+      }
+    }
     if (!Object.keys(changes).length) return this.summary(meta);
     this.store.updateThread(id, changes);
     // Renamed: the shell's questions about its tool calls say the new title.
@@ -533,7 +542,7 @@ export class Engine {
       this.hub.getAgentToken(id, changes.title).catch((error) => log(`renaming ${id}'s agent:`, errorMessage(error)));
     }
     const said = Object.entries(changes)
-      .filter(([k]) => k !== "title")
+      .filter(([k]) => k !== "title" && k !== "skillsOff")
       .map(([k, v]) => `${k}: ${v ?? "default"}`)
       .join(", ");
     if (said) {
@@ -611,6 +620,8 @@ export class Engine {
       defaults: claudeDefaults(meta.cwd),
       thinking: meta.thinking,
       permissionMode: meta.permissionMode,
+      // 0.13.0: layr skills switched off for this thread only.
+      skillsOff: meta.skillsOff ?? [],
       sessionId: meta.sessionId,
       turns: meta.turns,
       costUsd: round(meta.costUsd, 4),
@@ -1379,6 +1390,8 @@ export class Engine {
       log("no agent token, threads run without layr's tools:", errorMessage(error));
       this.store.append(meta.id, { type: "system", text: `layr's plugin tools are not available: ${errorMessage(error)}` });
     }
+    // 0.13.0: the skills that are on in layr (Settings > Skills), minus the thread's own skillsOff, as a plugin.
+    const skillsPlugin = this.skills ? await this.skills.pluginFor(meta).catch(() => null) : null;
     const models = await this.account.listModels().catch(() => []);
     const modelInfo = models.find((m) => m.id === meta.model) ?? null;
     const input = new AsyncQueue();
@@ -1435,6 +1448,7 @@ export class Engine {
       }), extras?.hooks),
       settingSources: ["user", "project", "local"],
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+      ...(skillsPlugin ? { plugins: [skillsPlugin] } : {}),
       ...(meta.allowRules?.length ? { allowedTools: [...meta.allowRules] } : {}),
       additionalDirectories: [this.store.attachmentsDir(meta.id), ...(extras?.directories ?? [])],
       includePartialMessages: true,

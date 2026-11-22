@@ -2,6 +2,7 @@
 // layr plugin "claude": layr's own Claude Code engine. An MCP server on stdio (the core is its client): its tools
 // are what the panels, other plugins (a pipeline) and agents use to run Claude Code threads.
 // Contract: docs/ARCHITECTURE.md > The MCP hub. Environment: LAYR_HUB_URL, LAYR_HUB_TOKEN, LAYR_DATA_DIR...
+import { Skills } from "./skills.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import os from "node:os";
@@ -52,6 +53,7 @@ const account = new Account({
 });
 const buildTimes = new BuildTimes({ dataDir, store });
 const engine = new Engine({ store, hub, account, buildTimes });
+engine.skills = new Skills({ hub, dataDir });
 // 0.7.0: threads with a plugin list (threadPlugins.js): their tools, folders, guard and prompt in each session.
 const plugins = new ThreadPlugins({ engine, hub, store, dataDir });
 engine.sessionExtras = (meta) => (ThreadPlugins.has(meta) ? plugins.sessionExtras(meta) : Promise.resolve(null));
@@ -705,7 +707,7 @@ tool(
 
 tool(
   "thread_update",
-  "Change a thread's title, model, effort, thinking or permission mode (a running session switches model and mode at once).",
+  "Change a thread's title, model, effort, thinking, permission mode or skills (a running session switches model and mode at once).",
   {
     thread: threadId,
     title: z.string().optional(),
@@ -713,8 +715,22 @@ tool(
     effort: effort.nullable().optional(),
     thinking: z.boolean().optional(),
     permissionMode: permissionMode.optional(),
+    skillsOff: z.array(z.string()).max(500).optional()
+      .describe("0.13.0: layr skills (<plugin>/<skill>) switched off for this thread only; applies from its next turn"),
   },
   (a) => engine.update(a.thread, a).then((thread) => ({ thread })),
+);
+
+tool(
+  "thread_skills",
+  "0.13.0: the layr skills that are on (Settings > Skills), and whether this thread gets each: {skills: [{id, name, description, plugin, here}]}.",
+  { thread: threadId },
+  async (a) => {
+    const meta = engine.requireThread(a.thread);
+    const off = new Set(meta.skillsOff ?? []);
+    const skills = await engine.skills.list();
+    return { skills: skills.map((s) => ({ id: s.id, name: s.name, description: s.description, plugin: s.plugin, here: !off.has(s.id) })) };
+  },
 );
 
 tool("thread_archive", "Archive a thread (stops it), or bring it back with archived: false.", { thread: threadId, archived: z.boolean().optional() }, (a) => ({
