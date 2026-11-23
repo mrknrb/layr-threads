@@ -1,9 +1,9 @@
 {
-  "name": "layr-plugin-claude",
+  "name": "layr-plugin-threads",
   "version": "0.12.1",
   "private": true,
   "type": "module",
-  "description": "layr's Claude Code engine: threads, worktrees, approvals, through the Agent SDK.",
+  "description": "layr's threads: chat and agent threads, worktrees, approvals; Claude Code through the Agent SDK.",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",

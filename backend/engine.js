@@ -9,7 +9,7 @@
 // to the user, and to Claude on the next message.
 //
 // Everything a panel needs goes two ways: appended to the thread's transcript (threads/<id>.jsonl), and emitted
-// as events on `claude:thread.<id>` through the hub. A panel opening later reads the transcript, then follows.
+// as events on `threads:thread.<id>` through the hub. A panel opening later reads the transcript, then follows.
 import { getSubagentMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { claudeEnv } from "./claudeEnv.js";
@@ -1336,7 +1336,7 @@ export class Engine {
         "Files were not changed back.",
       removed: cut.length,
     });
-    this.hub.emit(`claude:thread.${id}`, { kind: "reset" });
+    this.hub.emit(`threads:thread.${id}`, { kind: "reset" });
     this.emitThread(meta);
     const images = [];
     for (const img of target.images ?? []) {
@@ -1642,7 +1642,7 @@ export class Engine {
       case "rate_limit_event":
         this.account.setRateLimit(msg.rate_limit_info);
         if (msg.rate_limit_info?.status === "rejected" && live.turnActive) live.limitHit = true;
-        this.hub.emit("claude:usage", { limits: this.account.limits });
+        this.hub.emit("threads:usage", { limits: this.account.limits });
         return;
       default:
         return;
@@ -1950,7 +1950,7 @@ export class Engine {
           pendingApprovals: pending,
           ...(live.turnActive && !pending.length && meta.status === "waiting" ? { status: "running" } : {}),
         });
-        this.hub.emit("claude:approval", { kind: "resolved", thread: meta.id, requestId, decision: answer.decision });
+        this.hub.emit("threads:approval", { kind: "resolved", thread: meta.id, requestId, decision: answer.decision });
         this.emitThread(meta);
         resolve(result);
       };
@@ -1960,7 +1960,7 @@ export class Engine {
       live.approvals.set(requestId, { kind, resolve: finish, entry });
       this.addEntry(meta, entry);
       this.store.updateThread(meta.id, { status: "waiting", pendingApprovals: [...(meta.pendingApprovals ?? []), requestId] });
-      this.hub.emit("claude:approval", { kind: "request", thread: meta.id, threadTitle: meta.title, projectId: meta.projectId, approval: entry });
+      this.hub.emit("threads:approval", { kind: "request", thread: meta.id, threadTitle: meta.title, projectId: meta.projectId, approval: entry });
       this.emitThread(meta);
       const asks = { question: "Claude asks you", plan: "Claude has a plan for you", permission: "Claude needs your permission",
         plugin: "Claude wants to change a plugin" };
@@ -2112,19 +2112,19 @@ export class Engine {
 
   addEntry(meta, entry) {
     const full = this.store.append(meta.id, entry);
-    this.hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry: full });
+    this.hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry: full });
     return full;
   }
 
   emitEntry(id, entry) {
     if (!entry) return;
-    this.hub.emit(`claude:thread.${id}`, { kind: "entry", entry });
+    this.hub.emit(`threads:thread.${id}`, { kind: "entry", entry });
   }
 
   emitThread(meta) {
     const summary = this.summary(meta);
-    this.hub.emit(`claude:thread.${meta.id}`, { kind: "status", thread: summary });
-    this.hub.emit("claude:threads", { kind: "thread", thread: summary });
+    this.hub.emit(`threads:thread.${meta.id}`, { kind: "status", thread: summary });
+    this.hub.emit("threads:threads", { kind: "thread", thread: summary });
     for (const check of this.watchers.get(meta.id) ?? []) check();
   }
 
@@ -2149,7 +2149,7 @@ export class Engine {
     if (!buf) return;
     clearTimeout(buf.timer);
     this.deltaBuffers.delete(id);
-    if (buf.items.size) this.hub.emit(`claude:thread.${id}`, { kind: "delta", deltas: [...buf.items.values()] });
+    if (buf.items.size) this.hub.emit(`threads:thread.${id}`, { kind: "delta", deltas: [...buf.items.values()] });
   }
 
   /** The backend stops: running turns are marked to be picked up again at the next start (recover). */

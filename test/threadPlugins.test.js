@@ -38,7 +38,7 @@ check(parseMentions("(@a.b) @a.b").length === 1 && parseMentions("(@a.b)")[0].id
 const mineA = path.join(packages, "alpha", "mine");
 const mineB = path.join(packages, "beta", "mine");
 const linked = path.join(tmp, "dev", "gamma");
-const work = path.join(home, "plugin-data", "claude", "work", "w1");
+const work = path.join(home, "plugin-data", "threads", "work", "w1");
 const rows = [
   { id: "alpha", name: "Alpha", mode: "change", folder: mineA },
   { id: "beta", name: "Beta", mode: "read", folder: mineB },
@@ -181,7 +181,7 @@ const threads = {};
 const fakeStore = {
   thread: (id) => threads[id] ?? null,
   updateThread: (id, patch) => Object.assign(threads[id], patch),
-  attachmentsDir: (id) => path.join(home, "plugin-data", "claude", "threads", id),
+  attachmentsDir: (id) => path.join(home, "plugin-data", "threads", "threads", id),
 };
 let asked = null;
 let answer = { decision: "allow" };
@@ -198,7 +198,7 @@ const engine = {
     return answer;
   },
 };
-const plugins = new ThreadPlugins({ engine, hub, store: fakeStore, dataDir: path.join(home, "plugin-data", "claude") });
+const plugins = new ThreadPlugins({ engine, hub, store: fakeStore, dataDir: path.join(home, "plugin-data", "threads") });
 // t1 changes plugins in the app (started with pluginCopies: false, as Plugin care's fixes are).
 threads.t1 = { id: "t1", cwd: work, plugins: [], permissionMode: "default", pluginCopies: false };
 const t1 = threads.t1;
@@ -354,17 +354,17 @@ check(heldCopy.held && heldCopy.copy && !calls.some((c) => c.name === "layr__plu
 const unheld = await plugins.release(c1, "alpha");
 check(unheld.held === null && unheld.copy, "released: it may land again", unheld);
 
-// Restarts: claude and pipeline wait until no turn runs, claude last.
+// Restarts: threads and pipeline wait until no turn runs, threads last.
 let busy = true;
 const ran = [];
 const restarts = new PluginRestarts({ busy: () => busy, everyMs: 60_000 });
 const job = (id) => ({ id, run: async () => { ran.push(id); } });
-const first = await restarts.request([job("claude"), job("wiki"), job("pipeline")]);
+const first = await restarts.request([job("threads"), job("wiki"), job("pipeline")]);
 check(JSON.stringify(ran) === JSON.stringify(["wiki"]) && first.later.length === 2, "others restart at once", { ran, first });
 check(!(await restarts.tick()) && ran.length === 1, "not while a turn runs");
 busy = false;
-check(await restarts.tick() && JSON.stringify(ran) === JSON.stringify(["wiki", "pipeline", "claude"]),
-  "then pipeline, and claude last", ran);
+check(await restarts.tick() && JSON.stringify(ran) === JSON.stringify(["wiki", "pipeline", "threads"]),
+  "then pipeline, and threads last", ran);
 restarts.stop();
 
 rmSync(tmp, { recursive: true, force: true });

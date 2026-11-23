@@ -1,7 +1,7 @@
 // Try threads with a plugin list (0.7.0) in a browser, without the app: three sample plugins in a throwaway home
 // (their histories beside their folders), the dev server (dev/devserver.js: the real backend and real Claude on a
 // stand-in hub) on a free port, and the address to open. Ctrl+C stops it. Not used in production.
-//   node plugins/claude/dev/plugin-threads-demo.mjs
+//   node plugins/threads/dev/plugin-threads-demo.mjs
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import net from "node:net";

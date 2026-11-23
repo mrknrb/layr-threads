@@ -82,7 +82,7 @@ export async function openLink(url) {
   }
 }
 
-export const threadLink = (id) => `layr://claude/thread/${id}`;
+export const threadLink = (id) => `layr://threads/thread/${id}`;
 
 /** A plugin's page in layr (0.3.14: the Plugins list and plugin pages are layr's own): a tab, a commit in History. */
 export const pluginPageLink = (plugin, tab, commit) =>

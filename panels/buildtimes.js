@@ -1,4 +1,4 @@
-// The Build times panel: how long the builds, tests and checks Claude threads run take, per project (the backend's
+// The Build times panel: how long the builds, tests and checks threads run take, per project (the backend's
 // build_times tool, backend/buildTimes.js). Refreshes when shown and every minute.
 import { call, h, icon, notify, ready, relTime } from "./common.js";
 

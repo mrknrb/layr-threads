@@ -1,4 +1,4 @@
-// Plugins and Chrome extensions as what a thread works on (docs/ARCHITECTURE.md › The claude plugin › Threads on a
+// Plugins and Chrome extensions as what a thread works on (docs/ARCHITECTURE.md › The threads plugin › Threads on a
 // plugin or an extension). A thread's `target` is a plugin: one you made (its own folder and repository), one from the
 // store (layr__plugin_edit makes your copy, branch `mine`, first), one linked from a bigger repository, or a new one,
 // made in a folder of its own (pluginMaker.js says where). An extension is a plugin that brings a Chrome extension

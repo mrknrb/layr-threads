@@ -252,6 +252,39 @@ test("the old plugin maker's threads get a project for the plugin; one there alr
   rmSync(s.tmp, { recursive: true, force: true, maxRetries: 3 });
 });
 
+test("a renamed plugin (claude became threads): its own threads follow its data, with Claude's sessions", () => {
+  const s = setup();
+  const from = path.join(s.home, "plugin-data", "claude");
+  const to = path.join(s.home, "plugin-data", "threads");
+  const before = new Store(from);
+  const project = before.addProject({ path: path.join(from, "threads") });
+  const cwd = path.join(from, "threads", "t_a");
+  mkdirSync(cwd, { recursive: true });
+  thread(before, project, "t_a", cwd, { kind: "thread", plugins: [] });
+  before.saveProjects();
+  before.saveIndexNow();
+  const main = session(cwd, "s-t_a");
+  // What the core does at its start: the plugin's data folder gets the new name, and the move is listed.
+  renameSync(from, to);
+  const move = { id: "threads", from, to, at: 1, renamed: { from: "claude", to: "threads" } };
+  writeFileSync(path.join(s.home, MOVED_FILE), JSON.stringify([move]));
+  assert.deepEqual(readMoves(s.home)[0].renamed, { from: "claude", to: "threads" });
+  const store = new Store(to);
+  const out = applyMoves({ store, home: s.home });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].sessions, 1);
+  const a = store.thread("t_a");
+  assert.equal(a.cwd, path.join(to, "threads", "t_a"));
+  assert.equal(store.projects[0].path, path.join(to, "threads"));
+  assert.equal(readFileSync(sessionFile(a.cwd, "s-t_a"), "utf8"), readFileSync(main, "utf8"), "resumes there");
+  const said = store.readTranscript("t_a").filter((x) => x.subtype === "folder_moved");
+  assert.equal(said.length, 1);
+  assert.match(said[0].text, /The plugin claude is called threads now/);
+  assert.match(a.movedNote, /^\[layr: this thread's folder moved.*the plugin claude is called threads now/);
+  assert.deepEqual(applyMoves({ store, home: s.home }), [], "once");
+  rmSync(s.tmp, { recursive: true, force: true, maxRetries: 3 });
+});
+
 test("a move whose new folder isn't there waits", () => {
   const s = setup();
   const from = oldPlugin(s, "notes");
