@@ -84,6 +84,9 @@ export function terminalEnv(extra = {}, from = process.env) {
 
 /** Git for Windows' bash; WSL's `bash.exe` in System32 would start in Linux instead. */
 function gitBash() {
+  // layr sets this to the Git Bash it carries (data/tools/git) when the PC has no Git for Windows of its own.
+  const told = process.env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (told && existsSync(told)) return told;
   const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs")];
   for (const root of roots) {
     const bash = root && path.join(root, "Git", "bin", "bash.exe");
