@@ -1,4 +1,5 @@
 {
+  "repository": "https://github.com/mrknrb/layr-threads",
   "id": "threads",
   "name": "Threads",
   "version": "0.15.2",
