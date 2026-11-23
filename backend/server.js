@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// layr plugin "claude": layr's own Claude Code engine. An MCP server on stdio (the core is its client): its tools
-// are what the panels, other plugins (a pipeline) and agents use to run Claude Code threads.
+// layr plugin "threads" (until 0.15.0 "claude"): layr's chat and agent threads, Claude Code its first harness. An
+// MCP server on stdio (the core is its client): its tools are what the panels, other plugins (a pipeline) and agents
+// use to run threads.
 // Contract: docs/ARCHITECTURE.md > The MCP hub. Environment: LAYR_HUB_URL, LAYR_HUB_TOKEN, LAYR_DATA_DIR...
 import { Skills } from "./skills.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -44,7 +45,7 @@ const hub = new Hub({ url: process.env.LAYR_HUB_URL, token: process.env.LAYR_HUB
 // Another Claude account signed in (the accounts plugin switched the live login): its limits, not the old one's.
 const account = new Account({
   onAccountChanged: () => {
-    hub.emit("claude:usage", { limits: account.limits, account: account.limitsAccount ?? null });
+    hub.emit("threads:usage", { limits: account.limits, account: account.limitsAccount ?? null });
     // Threads paused for the old account's usage limit go on now if this one has room (0.9.0).
     void Promise.resolve()
       .then(() => engine.checkLimitPauses())
@@ -58,7 +59,7 @@ engine.skills = new Skills({ hub, dataDir });
 const plugins = new ThreadPlugins({ engine, hub, store, dataDir });
 engine.sessionExtras = (meta) => (ThreadPlugins.has(meta) ? plugins.sessionExtras(meta) : Promise.resolve(null));
 engine.autoAllow = (meta, toolName, input) => plugins.autoAllow(meta, toolName, input);
-// 0.11.0: plugins a turn changed are restarted; claude and pipeline only once no thread has a turn running.
+// 0.11.0: plugins a turn changed are restarted; threads and pipeline only once no thread has a turn running.
 const restarts = new PluginRestarts({
   busy: () => [...engine.lives.values()].some((live) => live.turnActive),
 });
@@ -97,7 +98,7 @@ async function commitPlugins(meta) {
       turn: turn ?? null,
       plugin: row.id,
     });
-    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
   }
   return saved;
 }
@@ -129,7 +130,7 @@ async function afterPluginsTurn(meta, saved) {
     const text = `${later.join(" and ")} restart${one ? "s" : ""} with the changes once no thread is running ` +
       `(${one ? "it runs" : "they run"} the threads)`;
     const entry = store.append(meta.id, { type: "system", text });
-    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
   }
 }
 
@@ -141,7 +142,7 @@ function linkRow(meta, row) {
       const rows = (meta.plugins ?? []).map((r) => (r.id === row.id ? { ...r, linked: true } : r));
       store.updateThread(meta.id, { plugins: rows });
       const entry = store.append(meta.id, { type: "system", text: `${info.name ?? row.name} is in layr now` });
-      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
       hub.notify(`New plugin: ${info.name ?? row.name}`, "success");
       engine.emitThread(meta);
     })
@@ -150,7 +151,7 @@ function linkRow(meta, row) {
       const text = `layr couldn't load ${row.name}'s layr.json, so it still runs the last one it could read: ${truncate(
         errorMessage(error), 400)}`;
       const entry = store.append(meta.id, { type: "system", subtype: "link-failed", text });
-      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
     });
 }
 
@@ -183,7 +184,7 @@ async function reloadExtension(meta, plugin) {
       } else if (logs && !logs.connected) text += "; it isn't connected to layr (yet)";
     }
     const entry = store.append(meta.id, { type: "system", text });
-    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
   } catch (error) {
     log(`reloading ${plugin}'s extension failed:`, errorMessage(error));
   }
@@ -208,7 +209,7 @@ async function commitTurn(meta) {
       turn: turn ?? null,
       plugin: threadPlugin(meta) ?? pluginOfFolder(done.top),
     });
-    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
   } catch (error) {
     log(`saving the changes in ${meta.cwd} failed:`, errorMessage(error));
   }
@@ -239,7 +240,7 @@ function linkPluginFolder(meta) {
       store.updateThread(meta.id, { extra: { ...(meta.extra ?? {}), linked: true, pluginId: info.id ?? meta.extra?.pluginId } });
       if (first) {
         const entry = store.append(meta.id, { type: "system", text: `The plugin is in layr now: ${info.name ?? info.id ?? meta.cwd}` });
-        hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+        hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
         hub.notify(`New plugin: ${info.name ?? info.id}`, "success");
       }
       return info;
@@ -251,13 +252,13 @@ function linkPluginFolder(meta) {
       const text = `layr couldn't load this plugin's layr.json, so it still runs the last one it could read: ${truncate(
         errorMessage(error), 400)}`;
       const entry = store.append(meta.id, { type: "system", subtype: "link-failed", text });
-      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
       hub.notify(`${meta.extra?.pluginId ?? "A plugin"}: layr.json can't be loaded`, "error");
       return null;
     });
 }
 
-const server = new McpServer({ name: "claude", version: "0.11.0" }, { capabilities: { tools: {} } });
+const server = new McpServer({ name: "threads", version: "0.11.0" }, { capabilities: { tools: {} } });
 
 /** Register a tool whose handler returns a plain object (sent as JSON text and as structured content). */
 function tool(name, description, shape, handler) {
@@ -310,7 +311,7 @@ tool(
     const dir = path.resolve(a.path);
     if (!isDirectory(dir)) throw new Error(`No such folder: ${dir}`);
     const project = store.addProject({ ...a, path: dir });
-    hub.emit("claude:threads", { kind: "projects" });
+    hub.emit("threads:threads", { kind: "projects" });
     return { project: { ...project, git: await isGitRepo(dir) } };
   },
 );
@@ -327,14 +328,14 @@ tool(
   },
   (a) => {
     const project = store.updateProject(a.project, a);
-    hub.emit("claude:threads", { kind: "projects" });
+    hub.emit("threads:threads", { kind: "projects" });
     return { project };
   },
 );
 
 tool("project_remove", "Take a project off the list (its folder and threads stay).", { project: z.string() }, (a) => {
   const project = store.removeProject(a.project);
-  hub.emit("claude:threads", { kind: "projects" });
+  hub.emit("threads:threads", { kind: "projects" });
   return { removed: project.id };
 });
 
@@ -349,7 +350,7 @@ tool("worktrees_list", "The git worktrees of a project, with their branches.", {
 tool(
   "thread_start",
   "Start a Claude Code thread in a project with a first prompt. Gives the thread (its id for the other tools). " +
-    "The turn runs on; follow it with thread_wait or the claude:thread.<id> events.",
+    "The turn runs on; follow it with thread_wait or the threads:thread.<id> events.",
   {
     project: z.string().optional().describe("Project id, name or folder (a folder that isn't a project yet is added); not with target"),
     target: z
@@ -441,7 +442,7 @@ async function startOnTarget(a) {
     rows.push(await plugins.resolve({ plugin: m.id, version: m.version ?? undefined, mode: "read" }).catch(() => null));
   }
   const project = store.addProject({ path: path.dirname(workDir), name: "Plugin threads", kind: "plugin" });
-  hub.emit("claude:threads", { kind: "projects" });
+  hub.emit("threads:threads", { kind: "projects" });
   const isNew = Boolean(main?.isNew);
   const prompt = isNew
     ? `${a.target.name ? `Name: ${a.target.name}\n\n` : ""}Please make this ${main.extension ? "Chrome extension (as a layr plugin)" : "layr plugin"} for me (id "${main.id}", folder ${main.folder}):\n\n${a.prompt}`
@@ -835,7 +836,7 @@ tool(
         ? `${r.plugin}: clashes in ${r.conflicts.join(", ")} (Claude resolves them, then land again)`
         : `${r.plugin}: ${a.action === "land" ? "landed" : "thrown away"}`);
       const entry = store.append(meta.id, { type: "system", subtype: `copy-${a.action}`, text: said.join("; ") });
-      hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
       for (const r of results) if (r.landed && r.extension) await reloadExtension(meta, r.plugin);
     }
     return { results, thread: engine.summary(engine.requireThread(meta.id)) };
@@ -854,7 +855,7 @@ tool(
     const results = await plugins.takeBack(meta, a.plugin);
     const said = results.map((r) => `${r.plugin}: ${r.undone} of ${r.of ?? 0} taken back${r.error ? ` (stopped: ${r.error})` : ""}`);
     const entry = store.append(meta.id, { type: "system", subtype: "taken-back", text: `Took back this thread's changes: ${said.join("; ")}` });
-    hub.emit(`claude:thread.${meta.id}`, { kind: "entry", entry });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
     const note = `The person took back what this thread changed (${said.join("; ")}): the files are as they were before.`;
     store.updateThread(meta.id, { pluginsNote: meta.pluginsNote ? `${meta.pluginsNote}\n${note}` : note });
     for (const r of results) {
@@ -1026,7 +1027,7 @@ export function toolSummary(name, input) {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`claude backend up (data ${dataDir}, hub ${hub.available ? "on" : "off"})`);
+  log(`threads backend up (data ${dataDir}, hub ${hub.available ? "on" : "off"})`);
   // Learn the models in the background, so the first thread start doesn't wait for it.
   setTimeout(() => void account.listModels().catch(() => {}), 2000).unref?.();
   account.watch();

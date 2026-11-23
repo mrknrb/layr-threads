@@ -49,7 +49,7 @@ async function startBackend() {
     command: process.execPath,
     args: [path.join(pluginDir, "backend", "server.js")],
     cwd: pluginDir,
-    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins"), LAYR_CLAUDE_RESUME_DELAY_MS: "1500",
+    env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "threads", LAYR_DEVICE: "test", LAYR_CLAUDE_WORKTREES: path.join(tmp, "worktrees"), LAYR_CLAUDE_PLUGINS_DIR: path.join(tmp, "plugins"), LAYR_CLAUDE_RESUME_DELAY_MS: "1500",
       // As on an older core, which keeps every plugin made here in that one folder (a newer one: movedSession.test.js,
       // targets.test.js): never the packages folder of a layr this test may be run from.
       LAYR_PACKAGES: "",
@@ -104,7 +104,7 @@ try {
 
   step("thread with an approval");
   const approvalsSeen = [];
-  hub.events.on("event", (topic, data) => topic === "claude:approval" && data.kind === "request" && approvalsSeen.push(data.approval));
+  hub.events.on("event", (topic, data) => topic === "threads:approval" && data.kind === "request" && approvalsSeen.push(data.approval));
   const { thread } = await call("thread_start", {
     project: project.id,
     prompt: "Create a file hello.txt containing exactly: hi\nUse the Write tool. Then reply with one word: done.",
@@ -114,14 +114,14 @@ try {
   check(end1.thread.status === "done", "turn ended done", end1.thread.status + (end1.thread.error ? ` ${end1.thread.error}` : ""));
   const hello = path.join(repo, "hello.txt");
   check(existsSync(hello) && readFileSync(hello, "utf8").trim() === "hi", "hello.txt contains hi", existsSync(hello) ? readFileSync(hello, "utf8") : "missing");
-  check(approvalsSeen.length >= 1 && approvalsSeen[0].tool === "Write", "claude:approval event for Write", approvalsSeen.map((a) => a.tool));
+  check(approvalsSeen.length >= 1 && approvalsSeen[0].tool === "Write", "threads:approval event for Write", approvalsSeen.map((a) => a.tool));
   const read1 = await call("thread_read", { thread: thread.id });
   check(read1.messages.some((m) => m.role === "tool" && /Write/.test(m.text)), "thread_read shows the Write call");
   const tr = await call("thread_transcript", { thread: thread.id });
   const types = new Set(tr.entries.map((e) => e.type));
   check(["created", "user", "turn_start", "tool_use", "tool_result", "approval", "approval_answer", "turn_end"].every((t) => types.has(t)), "transcript entry types", [...types]);
   check(tr.entries.at(-1).type === "turn_end" && typeof tr.entries.at(-1).costUsd === "number", "turn_end has cost", tr.entries.at(-1).costUsd);
-  check((topicsSeen.get("claude:thread.<id>:delta") ?? 0) > 0, "text deltas streamed as events", topicsSeen.get("claude:thread.<id>:delta"));
+  check((topicsSeen.get("threads:thread.<id>:delta") ?? 0) > 0, "text deltas streamed as events", topicsSeen.get("threads:thread.<id>:delta"));
   check(existsSync(path.join(dataDir, "threads", `${thread.id}.jsonl`)), "transcript file on disk");
   const tokenCalls = hub.calls.filter((c) => c.name === "layr__agent_token");
   const labels = tokenCalls.map((c) => c.args.label);
@@ -281,7 +281,7 @@ try {
     const start = Date.now();
     while (Date.now() - start < 60_000) {
       const tr2 = await call("thread_transcript", { thread: t2.id, limit: 5 });
-      if (topicsSeen.get("claude:thread.<id>:delta") && tr2.thread.status === "running" && Date.now() - start > 4000) break;
+      if (topicsSeen.get("threads:thread.<id>:delta") && tr2.thread.status === "running" && Date.now() - start > 4000) break;
       await new Promise((r) => setTimeout(r, 500));
     }
     const ir = await call("thread_interrupt", { thread: t2.id });

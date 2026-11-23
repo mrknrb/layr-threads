@@ -1,4 +1,4 @@
-// layr's skills as real Claude Code skills (docs/ARCHITECTURE.md > Skills, The claude plugin > Skills, 0.13.0).
+// layr's skills as real Claude Code skills (docs/ARCHITECTURE.md > Skills, The threads plugin > Skills, 0.13.0).
 // The core keeps one list of every installed plugin's skills and which are on (`layr__skills_list`). Each query
 // gets them as one local Claude Code plugin named "layr" (the SDK's `plugins` option), built in
 // `<LAYR_DATA_DIR>/skills/<hash>/` from the skills' folders: `.claude-plugin/plugin.json` and `skills/<name>/`.

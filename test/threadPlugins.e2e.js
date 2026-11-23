@@ -44,7 +44,7 @@ const transport = new StdioClientTransport({
   args: [path.join(pluginDir, "backend", "server.js")],
   cwd: pluginDir,
   env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: path.join(tmp, "data"),
-    LAYR_PLUGIN_ID: "claude", LAYR_PACKAGES: packages },
+    LAYR_PLUGIN_ID: "threads", LAYR_PACKAGES: packages },
   stderr: "pipe",
 });
 const client = new Client({ name: "e2e", version: "1" });

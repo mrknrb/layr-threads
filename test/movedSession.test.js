@@ -56,7 +56,7 @@ async function startBackend({ layout2 }) {
     args: [path.join(pluginDir, "backend", "server.js")],
     cwd: pluginDir,
     env: {
-      ...env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude",
+      ...env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "threads",
       LAYR_DEVICE: "test", LAYR_HOME: home, LAYR_CLAUDE_PLUGINS_DIR: old, LAYR_CLAUDE_BUILD_IMPORT: "0",
       ...(layout2 ? { LAYR_PACKAGES: packages } : {}),
     },

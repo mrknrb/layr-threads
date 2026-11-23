@@ -54,7 +54,7 @@ export async function startFakeHub({ port = 0, pluginToken = "plugin-token" } = 
     t("layr__data_list", { prefix: z.string().optional(), limit: z.number().optional() }, ({ prefix = "", limit = 100 }) => ({
       items: [...data.entries()].filter(([k]) => k.startsWith(prefix)).slice(0, limit).map(([key, value]) => ({ key, value })),
     }));
-    t("layr__plugins_list", {}, () => ({ plugins: [{ id: "claude", name: "Claude Code" }, { id: "demo", name: "Demo" }] }));
+    t("layr__plugins_list", {}, () => ({ plugins: [{ id: "threads", name: "Threads" }, { id: "demo", name: "Demo" }] }));
     if (who === "plugin") {
       t("layr__agent_token", { label: z.string().optional(), title: z.string().optional() }, () => {
         const token = `agent-${randomUUID()}`;
