@@ -131,7 +131,7 @@ test("going back cuts the chat before the message, keeps what it took out, and r
   assert.deepEqual(meta.earlierSessions, [], "earlier sessions hold what was taken out");
   assert.deepEqual(meta.todos, [{ content: "a", status: "done", activeForm: undefined }], "the todos of then");
   assert.equal(meta.preview, "Fixed.");
-  assert.ok(hub.events.some((e) => e.name === "claude:thread.t1" && e.payload.kind === "reset"), "panels draw it again");
+  assert.ok(hub.events.some((e) => e.name === "threads:thread.t1" && e.payload.kind === "reset"), "panels draw it again");
   // After a restart of the backend, numbering still goes on.
   const again = new Store(store.dataDir);
   assert.equal(again.append("t1", { type: "system", text: "x" }).seq, 14);

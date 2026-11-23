@@ -1,5 +1,5 @@
 // The thread panel: one Claude Code conversation, live. Loads the transcript with thread_transcript, then follows
-// the claude:thread.<id> events (entries, text deltas, status). Each turn (your message and what followed) is a block
+// the threads:thread.<id> events (entries, text deltas, status). Each turn (your message and what followed) is a block
 // of its own: a finished one folds its work into one row (folds.js), replies in the boxes format get boxes with
 // answers to pick (replies.js), and a thread that is a pipeline task gets the task's strip, with Send, answers and Stop
 // going through the pipeline (pipeline.js).
@@ -99,7 +99,7 @@ const state = {
 const layr = await ready();
 state.id = layr.info?.params?.thread ?? layr.info?.state?.thread ?? new URLSearchParams(location.search).get("thread");
 if (!state.id) {
-  log.replaceChildren(h("div", { class: "empty" }, "No thread to show. Open one from Claude threads."));
+  log.replaceChildren(h("div", { class: "empty" }, "No thread to show. Open one from Threads."));
   throw new Error("no thread");
 }
 layr.panel.setState({ thread: state.id });
@@ -123,7 +123,7 @@ setMarkdownHooks({
   },
 });
 
-on(`claude:thread.${state.id}`, (ev) => {
+on(`threads:thread.${state.id}`, (ev) => {
   if (!state.loaded) state.buffered.push(ev);
   else handleEvent(ev);
 });

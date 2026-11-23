@@ -1,4 +1,4 @@
-// The threads panel: every Claude thread in one list (the last changed first), live status, search, archive, and the
+// The threads panel: every thread in one list (the last changed first), live status, search, archive, and the
 // new-thread form.
 // 0.12.0: no Projects / Plugins / Extensions tabs any more, and threads aren't grouped by project or plugin. Each row
 // says what it works on. The form asks "Works on": a project (then which folder) or plugins (an empty folder whose
@@ -49,7 +49,7 @@ $("new").append(icon("plus", 14), "New");
 $("add-project").append(icon("folder", 14));
 $("show-archived").append(icon("archive", 14));
 
-on("claude:threads", (ev) => {
+on("threads:threads", (ev) => {
   if (ev?.kind === "thread" && ev.thread) {
     const t = ev.thread;
     if (Boolean(t.archived) !== state.archived) state.threads.delete(t.id);
@@ -57,7 +57,7 @@ on("claude:threads", (ev) => {
     render();
   } else if (ev?.kind === "projects") void loadProjects().then(render);
 });
-on("claude:usage", () => void loadUsage(false));
+on("threads:usage", () => void loadUsage(false));
 // Plugins installed, linked, switched or removed: the rows' plugin names follow.
 let targetsTimer = null;
 on("layr:packages", (ev) => {
@@ -608,7 +608,7 @@ render();
 void loadModels().then(() => document.dispatchEvent(new Event("claude-models")));
 void loadUsage(false);
 openFormFrom(layr.info?.params);
-// "New Claude thread" while this (single) panel is open: it is opened again with {new: true} (or {prompt, project}).
+// "New thread" while this (single) panel is open: it is opened again with {new: true} (or {prompt, project}).
 layr.panel.onParams((params) => openFormFrom(params));
 setInterval(render, 30_000);
 setInterval(() => loadUsage(false), 5 * 60_000);

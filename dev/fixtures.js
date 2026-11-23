@@ -75,7 +75,7 @@ const demo = [
     "1. 4 ⚪ Should the order be remembered?", "   - A. ⭐ Per notebook (85%) **each list keeps its own**", "   - B. Globally (55%) **one choice for all**",
     "2. ☑️ 6 🟠 Which extra orders?", "   - A. ⭐ Oldest first (80%) **the reverse of newest**", "   - B. Z–A (40%) **rarely wanted**", "   - C. ⭐ By size (70%) **long notes stand out**",
     "", "## How to test", "1. Start the notes plugin:", "", "```powershell", "Set-Location C:\\code\\layr_flutter; pnpm dev", "```", "",
-    "2. Open the task: layr://claude/thread/t_demo2", "",
+    "2. Open the task: layr://threads/thread/t_demo2", "",
     "Status: asks · Risk: ui · Try: ready",
   ].join("\n") },
   { type: "turn_end", turn: 2, status: "done", costUsd: 0.03, durationMs: 192_000, usage: { inputTokens: 1000, outputTokens: 2900, cacheReadTokens: 770_000, cacheWriteTokens: 6000 } },

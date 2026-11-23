@@ -3,10 +3,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 
-/** Log to stderr: the core keeps it in logs/claude.log (stdout is MCP). */
+/** Log to stderr: the core keeps it in logs/threads.log (stdout is MCP). */
 export function log(...args) {
   const text = args.map((a) => (typeof a === "string" ? a : a instanceof Error ? a.stack || a.message : safeJson(a)));
-  process.stderr.write(`[claude ${new Date().toISOString()}] ${text.join(" ")}\n`);
+  process.stderr.write(`[threads ${new Date().toISOString()}] ${text.join(" ")}\n`);
 }
 
 export function safeJson(value) {

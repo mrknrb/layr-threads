@@ -15,6 +15,8 @@
 // - The thread says it in one system entry (`subtype: "folder_moved"`), and Claude is told the new folder with the
 //   next message (`movedNote`): the paths it remembers are the old ones.
 // - Worktree threads of a moved repository: git's links between it and its worktrees are repaired.
+// - A move with `renamed: {from, to}` (0.15.0) is a plugin that got a new id: the core moved its folders under the new
+//   name (`claude` became `threads`, this plugin's own data and threads with it). Only the words differ.
 import { constants, copyFileSync, cpSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { sessionFile } from "./engine.js";
@@ -46,7 +48,10 @@ export function readMoves(home) {
   const ok = (m) => m && typeof m.from === "string" && m.from && typeof m.to === "string" && m.to;
   return (Array.isArray(list) ? list : [])
     .filter(ok)
-    .map((m) => ({ id: String(m.id ?? ""), from: m.from, to: m.to, at: Number(m.at) || 0 }));
+    .map((m) => ({
+      id: String(m.id ?? ""), from: m.from, to: m.to, at: Number(m.at) || 0,
+      ...(m.renamed?.from && m.renamed?.to ? { renamed: { from: String(m.renamed.from), to: String(m.renamed.to) } } : {}),
+    }));
 }
 
 /** `p` after `from` became `to`: `to` itself, or the same place inside it; null when `p` isn't in `from`. */
@@ -93,7 +98,7 @@ export function applyMoves({ store, home = layrHome(), env = process.env } = {})
     done.add(moveKey(move));
     const item = { ...move, projects: r.projects, threads: r.threads.length, sessions: r.sessions };
     newly.push({ ...item, appliedAt: nowIso() });
-    entries.push(...r.threads);
+    entries.push(...r.threads.map((t) => ({ ...t, renamed: move.renamed })));
     log(`${move.id}: its folder moved to ${move.to}: ${r.projects} project(s), ${r.threads.length} thread(s) follow, ` +
       `${r.sessions} with Claude's session`);
     if (r.repair) {
@@ -112,8 +117,11 @@ export function applyMoves({ store, home = layrHome(), env = process.env } = {})
     store.append(e.thread, {
       type: "system",
       subtype: "folder_moved",
-      text: "layr keeps each plugin in a folder of its own now, so this plugin's folder moved. The thread goes on " +
-        "in the new folder.",
+      text: e.renamed
+        ? `The plugin ${e.renamed.from} is called ${e.renamed.to} now, so its folder moved. The thread goes on in the ` +
+          "new folder."
+        : "layr keeps each plugin in a folder of its own now, so this plugin's folder moved. The thread goes on " +
+          "in the new folder.",
       from: e.from,
       to: e.to,
       session: e.session,
@@ -122,7 +130,7 @@ export function applyMoves({ store, home = layrHome(), env = process.env } = {})
   return out;
 }
 
-function applyMove(store, { id, from, to }, env) {
+function applyMove(store, { id, from, to, renamed }, env) {
   let projects = 0;
   for (const p of [...store.projects]) {
     const next = movedPath(p.path, from, to);
@@ -169,10 +177,12 @@ function applyMove(store, { id, from, to }, env) {
       meta.systemAppend = meta.systemAppend.split(json(old)).join(json(cwd)).split(old).join(cwd);
     }
     if (meta.sessionStarted) {
+      const [what, why] = renamed
+        ? ["this thread's folder", `the plugin ${renamed.from} is called ${renamed.to} now`]
+        : ["this plugin's folder", "layr keeps each plugin in a folder of its own now"];
       meta.movedNote =
-        `[layr: this plugin's folder moved since your last turn, from ${old} to ${cwd} (layr keeps each plugin in ` +
-        "a folder of its own now). You work in the new folder: every path you used under the old one is under the " +
-        "new one now, and the old folder is gone.]\n\n";
+        `[layr: ${what} moved since your last turn, from ${old} to ${cwd} (${why}). You work in the ` +
+        "new folder: every path you used under the old one is under the new one now, and the old folder is gone.]\n\n";
     }
     threads.push({ thread: meta.id, from: old, to: cwd, session });
   }

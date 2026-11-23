@@ -76,7 +76,7 @@ try {
 
   // ▶ Run and layr:// links.
   check((await thread.locator(".run-btn").count()) === 1, "▶ Run on the powershell block");
-  const threadLinks = thread.locator('a.layr-link[href^="layr://claude/"]');
+  const threadLinks = thread.locator('a.layr-link[href^="layr://threads/"]');
   check((await threadLinks.count()) === 1, "layr:// link in plain text is a link");
   // Without the concepts plugin: no prototypes under replies, no ◇ chip.
   check((await thread.locator(".protos:not([hidden])").count()) === 0, "no prototypes without concepts");

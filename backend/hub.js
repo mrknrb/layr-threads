@@ -25,7 +25,7 @@ export class Hub {
     if (this.client) return this.client;
     if (!this.available) throw new Error("No hub: LAYR_HUB_URL and LAYR_HUB_TOKEN are not set");
     this.connecting ??= (async () => {
-      const client = new Client({ name: "layr-plugin-claude", version: "0.1.0" });
+      const client = new Client({ name: "layr-plugin-threads", version: "0.1.0" });
       const transport = new StreamableHTTPClientTransport(new URL(this.url), {
         requestInit: { headers: { Authorization: `Bearer ${this.token}` } },
       });
@@ -112,7 +112,7 @@ export class Hub {
   }
 
   async openPanel(panel, params) {
-    return this.call("layr__panels_open", { plugin: "claude", panel, params });
+    return this.call("layr__panels_open", { plugin: "threads", panel, params });
   }
 
   async close() {

@@ -1,4 +1,4 @@
-// Plugins in a thread (0.7.0; docs/ARCHITECTURE.md › The claude plugin › Plugins in a thread). A thread that changes
+// Plugins in a thread (0.7.0; docs/ARCHITECTURE.md › The threads plugin › Plugins in a thread). A thread that changes
 // layr plugins starts in an empty folder of its own and keeps a list: the plugins it may read, and the ones it may
 // change. You add one by mentioning it (`@youtube`, `@pipeline@0.10.2`): Claude may read it. Claude adds one to read
 // by itself (`plugin_add`), and asks before changing one (`plugin_change`: a card you answer, Allow or Refuse).
@@ -256,12 +256,12 @@ export class WriteLocks {
 }
 
 /** Plugins that run the threads themselves: restarting them cuts off running turns, so they wait (0.11.0). */
-export const RUN_THREADS = ["claude", "pipeline"];
+export const RUN_THREADS = ["threads", "pipeline"];
 
 /**
  * Restarts of the plugins a turn changed (their panels show changes when opened again; a backend needs a restart, a
  * plugin of your own is linked again). The plugins that run threads (RUN_THREADS) are restarted only once no thread
- * has a turn running, claude last (it is this backend: its restart ends this process, and the threads go on after it
+ * has a turn running, threads last (it is this backend: its restart ends this process, and the threads go on after it
  * as after any restart).
  */
 export class PluginRestarts {
@@ -291,7 +291,7 @@ export class PluginRestarts {
   /** The waiting restarts, when no turn runs. Gives whether they ran. */
   async tick() {
     if (!this.pending.size || this.busy()) return false;
-    const jobs = [...this.pending].map(([id, run]) => ({ id, run })).sort((a, b) => (a.id === "claude") - (b.id === "claude"));
+    const jobs = [...this.pending].map(([id, run]) => ({ id, run })).sort((a, b) => (a.id === "threads") - (b.id === "threads"));
     this.pending.clear();
     for (const job of jobs) await runJob(job);
     return true;
