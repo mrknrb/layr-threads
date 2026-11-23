@@ -76,7 +76,7 @@ try {
 
   // ▶ Run and layr:// links.
   check((await thread.locator(".run-btn").count()) === 1, "▶ Run on the powershell block");
-  const threadLinks = thread.locator('a.layr-link[href^="layr://claude/"]');
+  const threadLinks = thread.locator('a.layr-link[href^="layr://threads/"]');
   check((await threadLinks.count()) === 1, "layr:// link in plain text is a link");
   // Without the concepts plugin: no prototypes under replies, no ◇ chip.
   check((await thread.locator(".protos:not([hidden])").count()) === 0, "no prototypes without concepts");
@@ -213,6 +213,15 @@ try {
   check(calls.some((c) => c.tool === "thread_action" && c.args.action === "land"), "button ran pipeline__thread_action");
   check(calls.some((c) => c.tool === "send" && c.args.number === 42 && /go on/.test(c.args.text) && /I agree/.test(c.args.text)),
     "Send went through pipeline__send with the prefix", JSON.stringify(calls.filter((c) => c.tool === "send")));
+  // Sent: the box is empty, and voice typing putting the phrase back right after (all at once) doesn't fill it again.
+  check((await t2.locator("#input").inputValue()) === "", "Send empties the text box");
+  await t2.locator("#input").focus();
+  await page.keyboard.insertText("go on");
+  check((await t2.locator("#input").inputValue()) === "", "the sent phrase written back at once goes again",
+    await t2.locator("#input").inputValue());
+  await page.keyboard.insertText("x");
+  check((await t2.locator("#input").inputValue()) === "x", "typing after it stays");
+  await t2.locator("#input").fill("");
   // 🌙 When Away: the message waits in the pipeline's Ready.
   check(await t2.locator("#away").isVisible(), "🌙 shows with a pipeline");
   await t2.locator("#input").fill("tonight please");

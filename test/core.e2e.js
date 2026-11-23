@@ -1,6 +1,6 @@
 // The panels against the real core (`layr serve`), as the shell would host them: a shell WebSocket creates the
 // threads panel, `shell:open` notifications open the panels it asks for. Real Claude (haiku, a tiny prompt).
-//   layr serve --port 4391 --token dev --home <tmp> --link plugins/claude
+//   layr serve --port 4391 --token dev --home <tmp> --link plugins/threads
 //   PLAYWRIGHT_DIR=<folder with playwright> node test/core.e2e.js [ws://127.0.0.1:4391/_layr/ws?token=dev] [outDir]
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -61,11 +61,11 @@ const browser = await chromium.launch();
 const errors = [];
 try {
   const state = await rpc("shell.state", {});
-  const claude = state.plugins.find((p) => p.id === "claude");
-  check(Boolean(claude), "claude plugin installed in the core", claude ? `${claude.version} backend ${claude.backend?.status}` : "missing");
-  check(state.commands.some((c) => (c.id ?? "").endsWith("make-plugin")), "commands registered", state.commands.filter((c) => String(c.id).startsWith("claude.")).map((c) => c.id).join(", "));
+  const claude = state.plugins.find((p) => p.id === "threads");
+  check(Boolean(claude), "threads plugin installed in the core", claude ? `${claude.version} backend ${claude.backend?.status}` : "missing");
+  check(state.commands.some((c) => (c.id ?? "").endsWith("make-plugin")), "commands registered", state.commands.filter((c) => String(c.id).startsWith("threads.")).map((c) => c.id).join(", "));
 
-  const panel = await rpc("panels.create", { plugin: "claude", panel: "threads" });
+  const panel = await rpc("panels.create", { plugin: "threads", panel: "threads" });
   const page = await browser.newPage({ viewport: { width: 420, height: 860 } });
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));

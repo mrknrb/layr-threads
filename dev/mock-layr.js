@@ -126,7 +126,7 @@
   };
 
   const info = {
-    plugin: "claude",
+    plugin: "threads",
     panel,
     instance,
     params,
@@ -152,7 +152,7 @@
     },
     tools: {
       call: (tool, args, opts) =>
-        opts?.plugin && opts.plugin !== "claude" ? fakePlugin(opts.plugin, tool, args ?? {}) : post("/dev/call", { tool, args: args ?? {}, plugin: opts?.plugin }),
+        opts?.plugin && opts.plugin !== "threads" ? fakePlugin(opts.plugin, tool, args ?? {}) : post("/dev/call", { tool, args: args ?? {}, plugin: opts?.plugin }),
       list: () => post("/dev/tools", {}),
     },
     // Optional connections: the pipeline is usable while localStorage "mock-layr.pipeline" is "1" (emit
@@ -185,7 +185,7 @@
         const links = JSON.parse(localStorage.getItem("mock-layr.links") || "[]");
         links.push(String(link));
         localStorage.setItem("mock-layr.links", JSON.stringify(links));
-        const m = /^layr:\/\/claude\/thread\/(.+)$/i.exec(String(link));
+        const m = /^layr:\/\/(?:threads|claude)\/thread\/(.+)$/i.exec(String(link));
         if (m) return window.layr.panels.open("thread", { thread: decodeURIComponent(m[1]), link });
         return null;
       },

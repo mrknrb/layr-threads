@@ -27,7 +27,7 @@ const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(pluginDir, "backend", "server.js")],
   cwd: pluginDir,
-  env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "claude", LAYR_DEVICE: "dev" },
+  env: { ...process.env, LAYR_HUB_URL: hub.url, LAYR_HUB_TOKEN: hub.pluginToken, LAYR_DATA_DIR: dataDir, LAYR_PLUGIN_ID: "threads", LAYR_DEVICE: "dev" },
   stderr: "inherit",
 });
 const client = new Client({ name: "devserver", version: "1" });
@@ -93,7 +93,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ error: String(error?.message ?? error) }));
   }
 });
-server.listen(port, "127.0.0.1", () => console.log(`claude panels dev server: http://127.0.0.1:${port}/  (data ${dataDir})`));
+server.listen(port, "127.0.0.1", () => console.log(`threads panels dev server: http://127.0.0.1:${port}/  (data ${dataDir})`));
 
 const stop = async () => {
   await client.close().catch(() => {});

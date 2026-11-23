@@ -33,16 +33,16 @@ const storeDir = path.join(tmp, "packages", "notes", "0.1.0");
 mkdirSync(storeDir, { recursive: true });
 writeFileSync(path.join(storeDir, "layr.json"), JSON.stringify({ id: "notes", name: "Notes" }));
 const mine = path.join(tmp, "packages", "notes", "mine");
-const inside = path.join(tmp, "repo", "plugins", "claude");
+const inside = path.join(tmp, "repo", "plugins", "threads");
 mkdirSync(inside, { recursive: true });
-writeFileSync(path.join(inside, "layr.json"), JSON.stringify({ id: "claude", name: "Claude Code" }));
+writeFileSync(path.join(inside, "layr.json"), JSON.stringify({ id: "threads", name: "Threads" }));
 
 const calls = [];
 /** What layr__plugin_repos lists. */
 const repos = [
   { id: "quiet", name: "Quiet", kind: "made", path: made, linked: true },
   { id: "notes", name: "Notes", kind: "store", path: storeDir, linked: false },
-  { id: "claude", name: "Claude Code", kind: "made", path: inside, linked: true, insideRepo: path.join(tmp, "repo") },
+  { id: "threads", name: "Threads", kind: "made", path: inside, linked: true, insideRepo: path.join(tmp, "repo") },
 ];
 const hub = {
   available: true,
@@ -62,7 +62,7 @@ const { targets } = await listTargets(hub);
 const byId = Object.fromEntries(targets.map((t) => [t.id, t]));
 check(byId.quiet?.place === "made" && byId.quiet.extension === true, "a made plugin with an extension", byId.quiet);
 check(byId.notes?.place === "store" && byId.notes.extension === false, "a store plugin", byId.notes);
-check(byId.claude?.place === "inside", "a plugin inside a bigger repository", byId.claude);
+check(byId.threads?.place === "inside", "a plugin inside a bigger repository", byId.threads);
 
 // A store plugin: your copy is made first, and the thread works there.
 const store = await resolveTarget(hub, { kind: "plugin", plugin: "notes" });
@@ -123,7 +123,7 @@ check(pStore.includes("own copy") && !pStore.includes("packages_link") && !pStor
   "store copy prompt");
 check(pStore.includes("layr.expect(") && pStore.includes("layr__problem_report") && !pStore.includes("layr-page.js"),
   "a plain plugin's prompt: expect in panels, problem_report in a backend");
-const pInside = targetSystemPrompt({ ...byId.claude, folder: inside, isNew: false, extension: false });
+const pInside = targetSystemPrompt({ ...byId.threads, folder: inside, isNew: false, extension: false });
 check(pInside.includes("bigger git repository"), "inside a repository prompt");
 
 check(isPluginsRoot(process.env.LAYR_CLAUDE_PLUGINS_DIR) && !isPluginsRoot(tmp), "the plugins folder is known");
