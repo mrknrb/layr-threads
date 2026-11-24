@@ -70,15 +70,63 @@ engine.onTurnEnded = (meta, status) => {
   // The plugins this turn held for writing are free again (one thread writes a plugin at a time).
   plugins.locks.release(meta.id);
   void restarts.tick();
-  if (status !== "done") return;
+  if (status !== "done") {
+    // 0.15.5: a landing that waited for this turn doesn't land by itself after a turn that didn't end well.
+    if (ThreadPlugins.has(meta) && status !== "paused") void landAfterTurn(meta, false);
+    return;
+  }
   if (ThreadPlugins.has(meta)) {
-    void commitPlugins(meta).then((saved) => afterPluginsTurn(meta, saved));
+    // 0.15.5: saved first, so what the turn changed in its copy lands with it.
+    void commitPlugins(meta).then(async (saved) => {
+      await afterPluginsTurn(meta, saved).catch((error) => log("after the plugins turn:", errorMessage(error)));
+      await landAfterTurn(meta, true);
+    });
     return;
   }
   void commitTurn(meta).finally(() => {
     if (meta.kind === "plugin") void afterPluginTurn(meta);
   });
 };
+
+/** 0.15.5: what a land / drop did, said in the thread (and extensions that landed reloaded). */
+async function saidLanding(meta, action, results) {
+  const said = results.map((r) => {
+    if (r.nothing) return `${r.plugin}: nothing new to land`;
+    if (r.stuck) return `${r.plugin}: not landed (${r.why ?? "its self-test still fails"}): land it yourself when it is right`;
+    if (r.review) return `${r.plugin}: ${r.commits} change${r.commits === 1 ? "" : "s"} went in since this copy was made: Claude checks they fit with this thread's changes, then it lands`;
+    if (r.checkFailed) return `${r.plugin}: its self-test fails in this copy: Claude fixes it, then it lands`;
+    if (r.landed === false) return `${r.plugin}: clashes in ${(r.conflicts ?? []).join(", ")} (Claude resolves them, then land again)`;
+    if (action !== "land") return `${r.plugin}: thrown away`;
+    return `${r.plugin}: landed${r.version ? ` (${r.version})` : ""}${r.afterCheck ? "; but its self-test fails on the landed plugin: Claude is told" : ""}`;
+  });
+  if (!said.length) return;
+  const entry = store.append(meta.id, { type: "system", subtype: `copy-${action}`, text: said.join("; ") });
+  hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
+  for (const r of results) if (r.landed && r.extension) await reloadExtension(meta, r.plugin);
+  for (const r of results) {
+    if (r.landed && r.afterCheck) hub.notify?.(`${r.plugin} landed, but its self-test fails on the landed plugin`, "warning");
+  }
+}
+
+/** 0.15.5: a turn that checked what went in meanwhile (or fixed the self-test) ended: its copies land, or wait. */
+async function landAfterTurn(meta, done) {
+  try {
+    const out = await plugins.afterLandTurn(engine.requireThread(meta.id), done ? engine.lastReply(meta.id) : "");
+    if (out?.results) {
+      await saidLanding(meta, "land", out.results);
+      const landed = out.results.filter((r) => r.landed).map((r) => r.plugin);
+      if (landed.length) hub.notify?.(`Landed ${landed.join(", ")} after checking what went in meanwhile`, "success");
+    } else if (out?.waits?.length) {
+      const entry = store.append(meta.id, { type: "system", subtype: "copy-land",
+        text: `${out.waits.join(", ")}: not landed: the turn didn't end with Status: done. Land it when it is right.` });
+      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
+    }
+  } catch (error) {
+    log(`landing after the turn of ${meta.id} failed:`, errorMessage(error));
+    const entry = store.append(meta.id, { type: "system", subtype: "copy-land", text: `Landing after the turn failed: ${errorMessage(error)}` });
+    hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
+  }
+}
 
 /** A thread with a plugin list: one commit per plugin it changed (with the thread's trailers), each said in it. */
 async function commitPlugins(meta) {
@@ -813,13 +861,19 @@ tool(
   "thread_plugin_copy",
   "A thread's own copies of plugins (0.12.0, plugin worktrees): land (its changes go into the plugin the app runs; a " +
     "clash leaves conflicts in the copy for Claude to resolve, then land again), drop (thrown away), try (the app runs " +
-    "the copy until untry, land or drop). plugin: one (default: every copy; try needs one). reopen: false: no fresh copy " +
-    "after land / drop (a task that ends). Gives {results}.",
+    "the copy until untry, land or drop), status (what each copy holds that isn't in the app: {plugin, ahead, dirty, " +
+    "conflicts}). A copy with nothing new gives {nothing: true} on land. plugin: one (default: every copy; try needs one). reopen: false: no fresh copy " +
+    "after land / drop (a task that ends). 0.15.5 (settings landReview / landCheck, on by default): before landing, " +
+    "what went into the plugin since the copy was made goes to the thread to check ({review: true, commits}), and the " +
+    "plugin's self-test runs in the copy ({checkFailed: true, output}); then the copy lands after that turn: by itself " +
+    "when it ends with Status: done (afterTurn, default true), else the caller lands again. A landed copy whose merged " +
+    "plugin fails its self-test says afterCheck {ok: false, output}. Gives {results}.",
   {
     thread: threadId,
     plugin: pluginId.optional(),
-    action: z.enum(["land", "drop", "try", "untry"]),
+    action: z.enum(["land", "drop", "try", "untry", "status"]),
     reopen: z.boolean().optional(),
+    afterTurn: z.boolean().optional(),
   },
   async (a) => {
     const meta = engine.requireThread(a.thread);
@@ -827,18 +881,19 @@ tool(
       throw new Error("Wait until the thread's turn ends");
     }
     let results;
+    if (a.action === "status") {
+      results = await plugins.copyStatus(plugins.copies(meta, a.plugin));
+      return { results };
+    }
     if (a.action === "try" || a.action === "untry") {
       if (!a.plugin) throw new Error("Which plugin to try? Give plugin");
       results = [await plugins.tryCopy(meta, a.plugin, a.action === "try")];
     } else {
       const reopen = a.reopen !== false;
-      results = a.action === "land" ? await plugins.land(meta, a.plugin, { reopen }) : await plugins.drop(meta, a.plugin, { reopen });
-      const said = results.map((r) => r.landed === false
-        ? `${r.plugin}: clashes in ${r.conflicts.join(", ")} (Claude resolves them, then land again)`
-        : `${r.plugin}: ${a.action === "land" ? "landed" : "thrown away"}`);
-      const entry = store.append(meta.id, { type: "system", subtype: `copy-${a.action}`, text: said.join("; ") });
-      hub.emit(`threads:thread.${meta.id}`, { kind: "entry", entry });
-      for (const r of results) if (r.landed && r.extension) await reloadExtension(meta, r.plugin);
+      results = a.action === "land"
+        ? await plugins.land(meta, a.plugin, { reopen, afterTurn: a.afterTurn !== false })
+        : await plugins.drop(meta, a.plugin, { reopen });
+      await saidLanding(meta, a.action, results);
     }
     return { results, thread: engine.summary(engine.requireThread(meta.id)) };
   },

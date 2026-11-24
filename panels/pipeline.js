@@ -4,7 +4,7 @@
 // toggle_plan / toggle_away; a pipeline without them gives none) and the task's buttons (`pipeline__thread_action`),
 // with an in-panel confirm where a button asks for one, and ⚙ Task page (the pipeline's Task panel beside the thread).
 // The task comes from `pipeline__thread_task` (ui.js threadTask).
-import { h, icon, notify } from "./common.js";
+import { h, icon, notify, relTime } from "./common.js";
 import { inlineMarkdown, markdown } from "./render.js";
 import { confirmIn, confirmPopup, onPhone, openLink, pipelineCall } from "./ui.js";
 
@@ -101,8 +101,18 @@ export function renderTaskStrip(el, task, threadId, onDone, composer = {}) {
   }
   if (task.landing?.state) {
     const bad = Boolean(task.landing.problem);
-    parts.push(h("div", { class: `task-landing${bad ? " bad" : ""}` }, icon(bad ? "x" : "branch", 13),
-      h("span", {}, `Landing: ${task.landing.state}`), bad ? h("span", { class: "problem" }, ` · ${task.landing.problem}`) : null));
+    const said = String(task.landing.state).replace(/^landing:\s*/i, "");
+    parts.push(h("div", { class: `task-landing${bad ? " bad" : ""}` }, bad ? icon("x", 13) : h("span", { class: "spinner" }),
+      h("span", {}, `Landing… ${said}`), bad ? h("span", { class: "problem" }, ` · ${task.landing.problem}`) : null));
+  } else if (task.landPressed) {
+    parts.push(h("div", { class: "task-landing" }, h("span", { class: "spinner" }),
+      h("span", {}, task.whenAway ? "Land pressed: it lands when you go Away" : "Land pressed: landing starts in a moment")));
+  } else if (task.landed) {
+    // 0.15.4: it landed: what, and when (Pipeline 0.20.1 gives `landed`).
+    const what = (task.landed.plugins ?? []).map((x) => (task.landed.versions?.[x] ? `${x} ${task.landed.versions[x]}` : x)).join(", ");
+    parts.push(h("div", { class: "task-landing done", title: task.landed.at ? new Date(task.landed.at).toLocaleString() : "" },
+      icon("check", 13), h("span", {}, `Landed${what ? `: ${what}` : ""}${task.landed.at ? ` · ${relTime(task.landed.at)} ago` : ""}` +
+        `${task.landed.by ? ` (${task.landed.by})` : ""}`)));
   }
   const b = task.brief;
   if (b && (b.what || b.asks || b.ifWrong)) {
