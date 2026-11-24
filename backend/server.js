@@ -696,7 +696,8 @@ tool(
 
 tool(
   "open_folder",
-  "Open a thread's folder on this PC in VS Code or File Explorer. `at`: when it was clicked (ms).",
+  "Open a thread's folder on this PC in VS Code or the file manager (`explorer`: File Explorer, Finder, or what " +
+    "xdg-open picks). `at`: when it was clicked (ms).",
   { thread: threadId, app: z.enum(["vscode", "explorer"]), at: z.number() },
   async (a) => {
     checkFresh(a.at);

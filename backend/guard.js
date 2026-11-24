@@ -6,6 +6,9 @@
 // which hosts this engine. A worker's `taskkill /F /IM layr.exe` to stop its test core closed the app with every
 // thread in it, twice (pipeline tasks #3 and #6, 2026-11-16 and 17). `taskkill /IM node.exe` ends this engine.
 //
+// The same on macOS and Linux, where the app is `layr` and the engine `node`: pkill, killall, `ps | grep | xargs
+// kill`, and `kill 0` / `kill -1` (its own process group, or every process), which end layr too.
+//
 // The guard reads the command as text: it catches the careless cases, not a determined workaround. Settings
 // (layr.json): killByName "all" (default) refuses every kill by name, "listed" only of the programs in
 // protectedPrograms, "off" none. Kills of the app's or the engine's process id are refused whatever it says.
@@ -19,9 +22,9 @@ export const GUARDED_TOOLS = "Bash|PowerShell|Monitor";
 
 const INSTEAD =
   "Stop only processes you started, by their id: keep the id when you start one (PowerShell: `$p = Start-Process " +
-  "... -PassThru`, then `Stop-Process -Id $p.Id`). A throwaway layr core: `scripts/test-core.ps1 start` / `stop` " +
-  "in the layr repository. If the command only mentions such a kill (a commit message, a search), write it " +
-  "differently.";
+  "... -PassThru`, then `Stop-Process -Id $p.Id`; bash or zsh: `cmd & pid=$!`, then `kill $pid`). A throwaway " +
+  "layr core: `scripts/test-core.ps1 start` / `stop` in the layr repository. If the command only mentions such a " +
+  "kill (a commit message, a search), write it differently.";
 
 /** "layr.exe" → "layr": names compare without case, quotes or `.exe`. */
 export function programName(name) {
@@ -72,16 +75,63 @@ function listAfter(tokens, i) {
 const PS_KILL = /\b(Stop-Process|spps)\b|(^|[|]\s*)kill\b|\.Kill\(\)/i;
 
 /**
- * What a command would end: `names` (programs by name; "*" when it picks them by a filter it can't read) and `pids`
- * (process ids written in it).
+ * bash / zsh `kill` (also `sudo kill`, `/bin/kill`): its process ids, after the signal options (`-9`, `-KILL`,
+ * `-s TERM`, `--`). A negative id is a process group (the one that id leads); `0` is the caller's own group (which
+ * holds this Claude engine) and `-1` every process of the user: both are `everyone`.
+ */
+function unixKill(tokens, pids) {
+  let everyone = false;
+  for (let i = 0; i < tokens.length; i++) {
+    if (!/^(?:\S*\/)?kill$/.test(tokens[i])) continue;
+    let signal = false;
+    let options = true;
+    let seenPid = false;
+    for (let j = i + 1; j < tokens.length; j++) {
+      const t = tokens[j];
+      if (/^[|;&)]/.test(t)) break;
+      if (options && t === "--") {
+        options = false;
+        continue;
+      }
+      if (options && ["-s", "-n", "--signal"].includes(t)) {
+        signal = true;
+        j++;
+        continue;
+      }
+      if (options && !signal && !seenPid && /^-(?:\d+|[A-Za-z][A-Za-z0-9+]*)$/.test(t)) {
+        signal = true;
+        continue;
+      }
+      if (/^-?\d+$/.test(t)) {
+        const n = Number(t);
+        seenPid = true;
+        if (n === 0 || n === -1) everyone = true;
+        else pids.push(Math.abs(n));
+      }
+    }
+  }
+  return everyone;
+}
+
+/**
+ * What a command would end: `names` (programs by name; "*" when it picks them by a filter it can't read), `pids`
+ * (process ids written in it) and `everyone` (`kill 0`, `kill -1`: its own process group, or every process).
  */
 export function killTargets(command) {
   const names = [];
   const pids = [];
+  let everyone = false;
   const text = String(command ?? "");
   for (const statement of statements(text)) {
     const tokens = words(statement);
     const lower = statement.toLowerCase();
+
+    if (unixKill(tokens, pids)) everyone = true;
+    // ps … | grep x | … xargs kill, kill $(ps … | grep x …): the program grep picks.
+    if (/\bkill\b/.test(statement) && /\bps\b/.test(statement)) {
+      const grep = statement.match(/\bgrep\b(?:\s+-\S+)*\s+("[^"]*"|'[^']*'|[^\s|;&)]+)/);
+      names.push(grep ? programName(grep[1].replace(/^\[(.)\]/, "$1")) : "*");
+    }
 
     // taskkill /IM x, /FI "IMAGENAME eq x", /PID n (also //IM from Git Bash, and -IM).
     if (/\btaskkill(\.exe)?\b/i.test(statement)) {
@@ -155,7 +205,7 @@ export function killTargets(command) {
       }
     }
   }
-  return { names: [...new Set(names.filter(Boolean))], pids: [...new Set(pids)] };
+  return { names: [...new Set(names.filter(Boolean))], pids: [...new Set(pids)], everyone };
 }
 
 /** Local script files a command runs (.ps1, .sh, .bat, .cmd), resolved against `cwd`, that exist. */
@@ -182,11 +232,15 @@ export function scriptsRun(command, cwd) {
 export function refusal(command, options = {}) {
   const { mode = "all", protectedNames = parseProgramList(DEFAULT_PROTECTED), protectedPids = [], cwd } = options;
   const check = (text, where) => {
-    const { names, pids } = killTargets(text);
+    const { names, pids, everyone } = killTargets(text);
     const pid = pids.find((p) => protectedPids.includes(p));
     if (pid !== undefined) {
       return `Blocked by layr: ${where}ends process ${pid}, which is layr itself (the app with every thread in it, ` +
-        `or this Claude engine). ${INSTEAD}`;
+        `or this Claude engine), or its process group. ${INSTEAD}`;
+    }
+    if (everyone) {
+      return `Blocked by layr: ${where}ends a whole process group or every process (\`kill 0\`, \`kill -1\`), ` +
+        `which takes layr with it (the app with every thread in it, and this Claude engine). ${INSTEAD}`;
     }
     if (mode === "off" || !names.length) return null;
     const hit = mode === "listed"
@@ -195,8 +249,8 @@ export function refusal(command, options = {}) {
     if (hit === undefined) return null;
     const what = hit === "*" ? "programs picked by a filter" : `every program named ${hit}`;
     return `Blocked by layr: ${where}ends ${what}. Killing by name also ends the user's own programs: the layr app ` +
-      `is layr.exe, the same name as a test core, and its Claude engine is node.exe; one such kill closed layr with ` +
-      `every thread in it. ${INSTEAD}`;
+      `is layr (layr.exe on Windows), the same name as a test core, and its Claude engine is node; one such kill ` +
+      `closed layr with every thread in it. ${INSTEAD}`;
   };
   const direct = check(command, "this command ");
   if (direct) return direct;
