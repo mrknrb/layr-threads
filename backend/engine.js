@@ -859,8 +859,12 @@ export class Engine {
       error: null,
       costUsd: (meta.costUsd ?? 0) + (result.costUsd ?? 0),
       pendingApprovals: [],
+      // 0.15.3: it went on early ("room again") and met the limit anyway: the reading lied, so this pause waits for
+      // its time and no early go-on again (`waitFull`), instead of trying and paying every few minutes. Another
+      // account signing in (`account` differs) still lets it go on early.
       limitPause: { until, since: before?.since ?? new Date(now).toISOString(), at: new Date(now).toISOString(), tries,
-        told: before?.told ?? false },
+        told: before?.told ?? false, account: this.account?.limitsAccount ?? null,
+        waitFull: !!(before?.waitFull || before?.early) && (before?.account ?? null) === (this.account?.limitsAccount ?? null) },
       limitPauseCarry: null,
       ...(meta.restartResumes ? { restartResumes: 0 } : {}),
     });
@@ -904,20 +908,21 @@ export class Engine {
     for (const meta of paused()) {
       const due = Date.parse(meta.limitPause.until) <= now;
       const began = meta.limitPause.at ?? meta.limitPause.since;
-      const room = limitRoom(this.account?.limits, this.account?.limitsAt, began, now);
+      const held = meta.limitPause.waitFull && (meta.limitPause.account ?? null) === (this.account?.limitsAccount ?? null);
+      const room = !held && limitRoom(this.account?.limits, this.account?.limitsAt, began, now);
       if (!due && !room) continue;
       went.push(meta.id);
-      await this.resumeFromLimit(meta.id, due ? "its time came" : "the account has room again");
+      await this.resumeFromLimit(meta.id, due ? "its time came" : "the account has room again", { early: !due });
     }
     return went;
   }
 
   /** A paused thread goes on in its session, told what happened. */
-  async resumeFromLimit(id, why) {
+  async resumeFromLimit(id, why, { early = false } = {}) {
     const meta = this.store.thread(id);
     if (!meta?.limitPause || meta.archived || this.lives.get(id)?.turnActive) return;
     log(`thread ${id} goes on after the usage limit (${why})`);
-    const carry = meta.limitPause;
+    const carry = { ...meta.limitPause, early };
     try {
       await this.dispatch(meta, { text: LIMIT_NOTE, auto: "limit" });
       // Kept for this turn: should it stop at the limit again, it is the same pause (pauseForLimit).

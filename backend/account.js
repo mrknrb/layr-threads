@@ -15,7 +15,10 @@ import { errorMessage, log } from "./util.js";
 const MODELS_MS = 30 * 60_000;
 const USAGE_MS = 5 * 60_000;
 const WATCH_MS = Number(process.env.LAYR_CLAUDE_ACCOUNT_WATCH_MS || 5000);
-const EMPTY_LIMITS = { fiveHour: null, sevenDay: null, sevenDayOpus: null, sevenDaySonnet: null, rejectedUntil: null };
+// `rejectedType`: the window the refusal came from (0.15.3), so a report on another window doesn't drop it.
+const EMPTY_LIMITS = {
+  fiveHour: null, sevenDay: null, sevenDayOpus: null, sevenDaySonnet: null, rejectedUntil: null, rejectedType: null,
+};
 
 /** Claude Code's global config, where the signed-in account is (found as the accounts plugin's files.js does). */
 export function claudeConfigPath(env = process.env) {
@@ -237,7 +240,20 @@ export class Account {
             : info.utilization;
       this.limits[key] = { utilization, resetsAt: resetsAt ?? prev?.resetsAt ?? null };
     }
-    this.limits.rejectedUntil = info.status === "rejected" ? (resetsAt ?? new Date(Date.now() + 15 * 60_000).toISOString()) : null;
+    // 0.15.3: a refusal holds until its time, or until the same window reports room; an "allowed" report about another
+    // window (the five-hour one while the weekly Opus one refuses) used to drop it, and paused threads went on at once.
+    const type = info.rateLimitType ?? null;
+    if (info.status === "rejected") {
+      this.limits.rejectedUntil = resetsAt ?? new Date(Date.now() + 15 * 60_000).toISOString();
+      this.limits.rejectedType = type;
+    } else if (
+      !this.limits.rejectedUntil ||
+      (this.limits.rejectedType ?? null) === type ||
+      Date.parse(this.limits.rejectedUntil) <= Date.now()
+    ) {
+      this.limits.rejectedUntil = null;
+      this.limits.rejectedType = null;
+    }
     this.limitsAt = Date.now();
     this.limitsSource = "event";
   }
