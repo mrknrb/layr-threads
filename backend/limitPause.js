@@ -72,7 +72,7 @@ export function pauseUntil({ text = "", limits = null, now = Date.now(), fallbac
   if (!future(said, now)) said = null;
   if (!said && future(limits?.rejectedUntil, now)) said = limits.rejectedUntil;
   if (!said) {
-    const full = [limits?.fiveHour, limits?.sevenDay]
+    const full = windowsOf(limits)
       .filter((w) => w && Number(w.utilization) >= 100 && future(w.resetsAt, now))
       .map((w) => w.resetsAt)
       .sort((a, b) => Date.parse(b) - Date.parse(a));
@@ -82,17 +82,23 @@ export function pauseUntil({ text = "", limits = null, now = Date.now(), fallbac
   return { until: new Date(Math.min(Date.parse(said) + SLACK_MS, now + WEEK_MS)).toISOString(), known: true };
 }
 
+/** Every window a limit can be full in: 0.15.3 counts the weekly Opus and Sonnet ones too. */
+const windowsOf = (limits) =>
+  [limits?.fiveHour, limits?.sevenDay, limits?.sevenDayOpus, limits?.sevenDaySonnet].filter(Boolean);
+
 const pctOf = (w, now) => (!w || w.utilization == null || (w.resetsAt && Date.parse(w.resetsAt) <= now) ? 0 : Number(w.utilization));
 
 /**
  * The account has room again before the pause ends: a reading taken after the pause began (`limitsAt`, ms) shows no
- * refusal and neither window full. Another account signed in drops the old one's readings, so its first reading counts.
+ * refusal and no window full. Another account signed in drops the old one's readings, so its first reading counts.
  */
 export function limitRoom(limits, limitsAt, since, now = Date.now()) {
   if (!limits || !limitsAt || !(limitsAt > Date.parse(since))) return false;
   if (!limits.fiveHour && !limits.sevenDay) return false;
   if (future(limits.rejectedUntil, now)) return false;
-  return pctOf(limits.fiveHour, now) < 100 && pctOf(limits.sevenDay, now) < 100;
+  // 0.15.3: a full weekly Opus or Sonnet window is no room either; only the two others were looked at, so a thread
+  // stopped by the Opus week went on every few minutes, met the limit again and paid each time.
+  return windowsOf(limits).every((w) => pctOf(w, now) < 100);
 }
 
 /** "16:00", or "Sat 16:00" when not today: when the pause ends, for the transcript and notifications. */

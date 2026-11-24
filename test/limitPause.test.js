@@ -202,3 +202,54 @@ test("another failure still fails", async () => {
   assert.equal(store.thread("t1").status, "failed");
   assert.equal(store.thread("t1").limitPause ?? null, null);
 });
+
+// 0.15.3, task 165's loop: a thread stopped by the weekly Opus limit went on every few minutes and paid each time.
+test("a full weekly Opus or Sonnet window is no room, and says when the pause ends", () => {
+  const now = Date.now();
+  const since = new Date(now - 60_000).toISOString();
+  const week = new Date(now + 5 * 24 * HOUR).toISOString();
+  const opusFull = { fiveHour: { utilization: 12 }, sevenDay: { utilization: 60 }, sevenDayOpus: { utilization: 100, resetsAt: week } };
+  assert.ok(!limitRoom(opusFull, now, since, now));
+  assert.ok(!limitRoom({ ...opusFull, sevenDayOpus: null, sevenDaySonnet: { utilization: 100 } }, now, since, now));
+  assert.ok(limitRoom({ ...opusFull, sevenDayOpus: { utilization: 99, resetsAt: week } }, now, since, now));
+  assert.equal(pauseUntil({ limits: opusFull, now }).until, new Date(Date.parse(week) + SLACK_MS).toISOString());
+});
+
+test("a refusal isn't dropped by a report about another window", async () => {
+  const { Account } = await import("../backend/account.js");
+  const account = new Account({ configPath: path.join(os.tmpdir(), "layr-no-such-config.json") });
+  const reset = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
+  account.setRateLimit({ status: "rejected", rateLimitType: "seven_day_opus", resetsAt: reset });
+  account.setRateLimit({ status: "allowed", rateLimitType: "five_hour", utilization: 0.2 });
+  assert.ok(account.limits.rejectedUntil, "the five-hour window has room, the Opus week still refuses");
+  account.setRateLimit({ status: "allowed", rateLimitType: "seven_day_opus", utilization: 0.1 });
+  assert.equal(account.limits.rejectedUntil, null, "the same window reporting room ends it");
+});
+
+test("gone on early and met the limit again: it waits for its time, unless another account signs in", async () => {
+  const store = newStore();
+  const meta = thread(store, "t1");
+  const account = { limits: {}, limitsAt: 0, limitsAccount: "a@example.com" };
+  account.usage = async () => {
+    account.limits = { fiveHour: { utilization: 3 }, sevenDay: { utilization: 10 }, rejectedUntil: null };
+    account.limitsAt = Date.now() + 1;
+  };
+  const engine = engineOn(store, account);
+  engine.account = account;
+  await engine.send("t1", { text: "Start the work" });
+  hitLimit(engine, meta, "hit your limit");
+  assert.equal(store.thread("t1").limitPause.waitFull, false);
+  assert.deepEqual(await engine.checkLimitPauses({ read: true, now: Date.now() + 2 }), ["t1"], "the reading says room");
+  hitLimit(engine, meta, "hit your limit");
+  const pause = store.thread("t1").limitPause;
+  assert.equal(pause.waitFull, true, "the reading was wrong");
+  assert.equal(pause.tries, 2);
+  assert.deepEqual(await engine.checkLimitPauses({ read: true, now: Date.now() + 3 }), [], "no early go-on again");
+  account.limitsAccount = "b@example.com";
+  assert.deepEqual(await engine.checkLimitPauses({ read: true, now: Date.now() + 4 }), ["t1"], "another account may");
+  hitLimit(engine, meta, "hit your limit");
+  assert.equal(store.thread("t1").limitPause.waitFull, false, "B's own pause starts fresh");
+  const until = Date.parse(store.thread("t1").limitPause.until);
+  assert.deepEqual(await engine.checkLimitPauses({ now: until + 1 }), ["t1"], "its time still comes");
+  clearInterval(engine.limitTimer);
+});
