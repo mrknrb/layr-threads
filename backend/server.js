@@ -813,12 +813,13 @@ tool(
   "thread_plugin_copy",
   "A thread's own copies of plugins (0.12.0, plugin worktrees): land (its changes go into the plugin the app runs; a " +
     "clash leaves conflicts in the copy for Claude to resolve, then land again), drop (thrown away), try (the app runs " +
-    "the copy until untry, land or drop). plugin: one (default: every copy; try needs one). reopen: false: no fresh copy " +
+    "the copy until untry, land or drop), status (what each copy holds that isn't in the app: {plugin, ahead, dirty, " +
+    "conflicts}). A copy with nothing new gives {nothing: true} on land. plugin: one (default: every copy; try needs one). reopen: false: no fresh copy " +
     "after land / drop (a task that ends). Gives {results}.",
   {
     thread: threadId,
     plugin: pluginId.optional(),
-    action: z.enum(["land", "drop", "try", "untry"]),
+    action: z.enum(["land", "drop", "try", "untry", "status"]),
     reopen: z.boolean().optional(),
   },
   async (a) => {
@@ -827,13 +828,19 @@ tool(
       throw new Error("Wait until the thread's turn ends");
     }
     let results;
+    if (a.action === "status") {
+      results = await plugins.copyStatus(plugins.copies(meta, a.plugin));
+      return { results };
+    }
     if (a.action === "try" || a.action === "untry") {
       if (!a.plugin) throw new Error("Which plugin to try? Give plugin");
       results = [await plugins.tryCopy(meta, a.plugin, a.action === "try")];
     } else {
       const reopen = a.reopen !== false;
       results = a.action === "land" ? await plugins.land(meta, a.plugin, { reopen }) : await plugins.drop(meta, a.plugin, { reopen });
-      const said = results.map((r) => r.landed === false
+      const said = results.map((r) => r.nothing
+        ? `${r.plugin}: nothing new to land`
+        : r.landed === false
         ? `${r.plugin}: clashes in ${r.conflicts.join(", ")} (Claude resolves them, then land again)`
         : `${r.plugin}: ${a.action === "land" ? "landed" : "thrown away"}`);
       const entry = store.append(meta.id, { type: "system", subtype: `copy-${a.action}`, text: said.join("; ") });

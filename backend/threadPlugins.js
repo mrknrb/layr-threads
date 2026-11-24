@@ -146,6 +146,8 @@ export function publicRow(r) {
     // 0.12.0: the thread's own copy of the plugin (a plugin worktree): the app runs the plugin as it was until it lands.
     copy: r.copy ? { name: r.copy.name, branch: r.copy.branch ?? null, base: r.copy.base ?? null,
       trying: Boolean(r.copy.trying) } : null,
+    // 0.15.4: when this thread last landed the plugin, and at which version (the panel says "✓ Landed").
+    landed: r.landed ? { at: r.landed.at ?? null, version: r.landed.version ?? null, commit: r.landed.commit ?? null } : null,
     id: r.id, name: r.name, mode: r.mode, version: r.version ?? null, source: r.source ?? null, place: r.place ?? null,
     folder: r.folder ?? null, extension: Boolean(r.extension), isNew: Boolean(r.isNew), by: r.by ?? "you",
     at: r.at ?? null,
@@ -653,13 +655,20 @@ export class ThreadPlugins {
     const notes = [];
     // A held copy (it needs a core the app doesn't have yet) stays out of a landing of every copy.
     for (const row of this.copies(meta, plugin).filter((r) => plugin || !r.held)) {
+      // 0.15.4: a copy with nothing new (landed already, or never changed) doesn't land again.
+      const [st] = await this.copyStatus([row]);
+      if (st && st.known && !st.ahead && !st.dirty && !st.conflicts.length) {
+        results.push({ plugin: row.id, nothing: true });
+        continue;
+      }
+      const version = readManifest(row.folder)?.version ?? null;
       const r = await this.hub.call("layr__plugin_worktree_land", { plugin: row.id, name: row.copy.name });
       if (r?.landed) {
-        const after = await this.after(meta, row, reopen);
+        const after = { ...(await this.after(meta, row, reopen)), landed: { at: nowIso(), version, commit: r.commit ?? null } };
         next.set(row.id, after);
         notes.push(`The person landed your changes to ${row.name} (${row.id}): the app runs them now.` +
           (after.copy ? ` Your new copy is ${after.folder}.` : ` Its folder is ${after.folder} now.`));
-        results.push({ plugin: row.id, landed: true, commit: r.commit ?? null, changes: r.changes ?? 0,
+        results.push({ plugin: row.id, landed: true, commit: r.commit ?? null, changes: r.changes ?? 0, version,
           extension: Boolean(row.extension) });
       } else {
         notes.push(r?.prompt ?? `Your changes to ${row.name} clash with the plugin as it is now: resolve ${(r?.conflicts ?? []).join(", ")}.`);
@@ -668,6 +677,26 @@ export class ThreadPlugins {
     }
     this.swap(meta, next, notes);
     return results;
+  }
+
+  /**
+   * 0.15.4: what each copy holds that isn't in the app yet (layr__plugin_worktrees): [{plugin, known, ahead, dirty,
+   * conflicts}]. known false: the core didn't say (then Land stays offered).
+   */
+  async copyStatus(rows) {
+    const out = [];
+    const byPlugin = new Map();
+    for (const row of rows) {
+      let list = byPlugin.get(row.id);
+      if (!list) {
+        list = await this.hub.call("layr__plugin_worktrees", { plugin: row.id }).then((r) => r?.worktrees ?? [], () => null);
+        byPlugin.set(row.id, list);
+      }
+      const w = list?.find((x) => x.name === row.copy.name);
+      out.push(w ? { plugin: row.id, known: true, ahead: w.ahead ?? 0, dirty: w.dirty ?? 0, conflicts: w.conflicts ?? [] }
+        : { plugin: row.id, known: false, ahead: null, dirty: null, conflicts: [] });
+    }
+    return out;
   }
 
   /** Drop: each copy thrown away; the plugin stays as the app runs it. */

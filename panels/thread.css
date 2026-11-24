@@ -343,6 +343,8 @@ a.layr-link { text-decoration-style: dashed; }
 #task .task-box { display: flex; align-items: center; gap: 6px; color: var(--accent); }
 #task .task-landing { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
 #task .task-landing.bad { color: var(--danger); }
+#task .task-landing.done { color: var(--ok, var(--success, var(--accent))); }
+#task .task-landing .spinner { width: 11px; height: 11px; flex: none; }
 #task .task-brief > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
   color: var(--fg-dim); }
 #task .task-brief > summary .chev { transition: transform 0.12s; }
@@ -497,3 +499,9 @@ details.tool > summary .sub-model { flex: none; height: 18px; font-size: 11px; }
 @media (hover: none) { .sw-pop { opacity: 1; } }
 @keyframes sw-in { from { transform: translateX(-100%); } to { transform: none; } }
 @keyframes sw-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* 0.15.4: Land's own feedback: a spinner while it lands, then what landed and when. */
+#plugins .btn.landing { opacity: 1; cursor: progress; display: inline-flex; align-items: center; gap: 6px; }
+#plugins .btn.landing .spinner { width: 11px; height: 11px; }
+#plugins .landed-note { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--ok, var(--success, var(--accent)));
+  border: 1px solid color-mix(in srgb, var(--ok, var(--accent)) 45%, var(--border)); border-radius: 999px; padding: 1px 8px; }

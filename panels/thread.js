@@ -2154,6 +2154,11 @@ function slashKey(ev) {
 
 // ------------------------------------------------------------------ plugins in the thread (0.7.0)
 
+// 0.15.4: what each own copy holds that isn't in the app yet (thread_plugin_copy status), read when the thread's
+// turn ends or its plugin list changes; and the copies landing right now (plugin id → name).
+const landingNow = new Map();
+const copyStatus = { key: "", byPlugin: new Map(), reading: null };
+
 const MODE_LABEL = {
   read: ["reads", "Claude may read it, and asks you before changing it"],
   change: ["changes", "Claude may change it: every change is saved as a version"],
@@ -2175,7 +2180,9 @@ Held back: the app runs ${p.held.version} until you switch these changes on` +
     // 0.12.0: the thread's own copy: the app runs the plugin as it was until you land it (or try it).
     const copyTitle = p.copy ? `
 Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.trying ? " (you are trying the copy now)" : ""}` : "";
-    const modeText = p.held ? "held back" : p.copy ? (p.copy.trying ? "trying copy" : "own copy") : label;
+    const fresh = p.copy && copyIsEmpty(p);
+    const modeText = p.held ? "held back" : landingNow.has(p.id) ? "landing…" : p.copy
+      ? (p.copy.trying ? "trying copy" : fresh && p.landed ? "landed ✓" : "own copy") : p.landed ? "landed ✓" : label;
     const chip = h("button", { class: `plugin-chip ${p.mode}${p.held ? " held" : ""}${p.copy ? " copy" : ""}${p.copy?.trying ? " trying" : ""}`,
       title: `${p.name} (${p.id}${p.version ? ` ${p.version}` : ""}): ${title}${heldTitle}${copyTitle}` },
     icon(p.extension ? "puzzle" : "box", 12), h("span", { class: "name" }, p.name),
@@ -2194,16 +2201,31 @@ Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.
     input.selectionStart = input.selectionEnd = before.length + (before && !/\s$/.test(before) ? 2 : 1);
     renderMention();
   });
+  // 0.15.4: Land only for copies with something new; "Landing…" while it runs; "✓ Landed" (version, when) after.
   const copies = t.plugins.filter((p) => p.copy);
-  const land = copies.length ? h("button", { class: "btn primary small", title: `Put this thread's changes into the app: ${copies.map((p) => p.name).join(", ")}` },
-    icon("check", 12), copies.length > 1 ? `Land all (${copies.length})` : `Land ${copies[0].name}`) : null;
-  land?.addEventListener("click", () => void copyAction("land", null));
+  void readCopyStatus(t, copies);
+  const toLand = copies.filter((p) => !copyIsEmpty(p));
+  let land = null;
+  if (landingNow.size) {
+    land = h("button", { class: "btn primary small landing", disabled: true, title: "Putting this thread's changes into the app" },
+      h("span", { class: "spinner" }), `Landing ${[...landingNow.values()].join(", ")}…`);
+  } else if (toLand.length) {
+    land = h("button", { class: "btn primary small", title: `Put this thread's changes into the app: ${toLand.map((p) => p.name).join(", ")}` },
+      icon("check", 12), toLand.length > 1 ? `Land all (${toLand.length})` : `Land ${toLand[0].name}`);
+    land.addEventListener("click", () => void copyAction("land", toLand.length === copies.length ? null : toLand[0]));
+  }
+  const landedRows = t.plugins.filter((p) => p.landed && !toLand.includes(p));
+  const landedNote = !landingNow.size && landedRows.length ? h("span", { class: "landed-note",
+    title: landedRows.map((p) => `${p.name}${p.landed.version ? ` ${p.landed.version}` : ""} landed ${new Date(p.landed.at).toLocaleString()}` +
+      `${p.copy ? ": the app runs it now; new changes go into a fresh copy" : ""}`).join("\n") },
+  icon("check", 12), `Landed ${landedRows.map((p) => `${p.name}${p.landed.version ? ` ${p.landed.version}` : ""}`).join(", ")} · ${relTime(landedRows[0].landed.at)} ago`) : null;
   el.replaceChildren(...[
     h("span", { class: "plugins-label", title: "What this thread may read and change. Mention a plugin with @ to " +
       "let Claude read it; Claude asks before changing one." }, "Plugins"),
     ...chips,
     t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
     add,
+    landedNote,
     land,
     t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
       "all allowed") : null,
@@ -2252,6 +2274,11 @@ async function copyAction(action, p) {
   const holder = $("plugins");
   if (action === "drop" && !(await confirmIn(holder, `Throw away this thread's changes to ${p ? p.name : "every plugin"}? The plugin stays as the app runs it.`,
     { ok: "Drop", danger: true }))) return;
+  if (action === "land") {
+    if (landingNow.size) return;
+    for (const x of (p ? [p] : state.thread?.plugins?.filter((r) => r.copy) ?? [])) landingNow.set(x.id, x.name);
+    if (state.thread) renderPlugins(state.thread);
+  }
   try {
     const r = await call("thread_plugin_copy", { thread: state.id, action, ...(p ? { plugin: p.id } : {}) });
     if (r?.thread) setThread(r.thread);
@@ -2261,8 +2288,10 @@ async function copyAction(action, p) {
       return;
     }
     const clashes = results.filter((x) => x.landed === false);
-    const done = results.filter((x) => x.landed || x.dropped).map((x) => x.plugin);
-    if (done.length) notify(`${action === "land" ? "Landed" : "Dropped"}: ${done.join(", ")}`, "success");
+    const done = results.filter((x) => x.landed || x.dropped).map((x) => `${x.plugin}${x.version ? ` ${x.version}` : ""}`);
+    const nothing = results.filter((x) => x.nothing).map((x) => x.plugin);
+    if (done.length) notify(`${action === "land" ? "Landed: the app runs" : "Dropped"} ${done.join(", ")}${action === "land" ? " now" : ""}`, "success");
+    if (nothing.length) notify(`Nothing new to land in ${nothing.join(", ")}: it is in the app already`, "info");
     if (clashes.length && (await confirmIn(holder, `${clashes.map((x) => x.plugin).join(", ")} changed meanwhile and clashes with ` +
       `this thread's changes (${clashes.flatMap((x) => x.conflicts).join(", ")}). Let Claude resolve it, then land again?`,
     { ok: "Let Claude resolve it" }))) {
@@ -2272,7 +2301,32 @@ async function copyAction(action, p) {
     }
   } catch (error) {
     notify(error.message, "error");
+  } finally {
+    if (action === "land" || action === "drop") {
+      landingNow.clear();
+      copyStatus.key = "";
+      if (state.thread) renderPlugins(state.thread);
+    }
   }
+}
+
+
+/** A copy with nothing new to land (known from its status; unknown: it may have something). */
+function copyIsEmpty(p) {
+  const st = copyStatus.byPlugin.get(p.id);
+  return Boolean(st?.known && !st.ahead && !st.dirty && !st.conflicts?.length);
+}
+
+async function readCopyStatus(t, copies) {
+  if (!copies.length || busy(t)) return;
+  const key = `${t.id}|${t.status}|${t.updatedAt ?? ""}|${copies.map((p) => `${p.id}:${p.copy.name}`).join(",")}`;
+  if (copyStatus.key === key || copyStatus.reading) return;
+  copyStatus.key = key;
+  copyStatus.reading = call("thread_plugin_copy", { thread: t.id, action: "status" }).then((r) => {
+    const before = JSON.stringify([...copyStatus.byPlugin]);
+    copyStatus.byPlugin = new Map((r?.results ?? []).map((x) => [x.plugin, x]));
+    if (JSON.stringify([...copyStatus.byPlugin]) !== before && state.thread?.id === t.id) renderPlugins(state.thread);
+  }, () => {}).finally(() => (copyStatus.reading = null));
 }
 
 /** Undo what this thread changed in a plugin (null: in every plugin it may change), after asking. */
