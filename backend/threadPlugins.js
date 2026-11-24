@@ -9,6 +9,7 @@
 // - After every turn each changed plugin gets its commit (autoCommit.js, with the thread's trailers); "take back"
 //   undoes this thread's commits in a plugin, newest first, leaving other threads' changes in between.
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -140,12 +141,83 @@ export function guardDecision(toolName, input, ctx) {
   return null;
 }
 
+/** 0.15.5: how many times a landing goes back to its thread (review, self-test) before it stops. */
+const LAND_ROUNDS = 3;
+
+/** A history commit's time in ms (seconds on an older core). */
+const commitMs = (t) => (Number(t) < 1e12 ? Number(t) * 1000 : Number(t));
+
+const tail = (text, n = 3000) => {
+  const s = String(text ?? "").trim();
+  return s.length > n ? `…${s.slice(-n)}` : s;
+};
+
+/** 0.15.5: what the thread is asked before its copy lands, when the plugin changed since the copy was made. */
+export function reviewPrompt(row, news) {
+  const shown = news.slice(0, 15).map((c) => `- ${c.short ?? String(c.sha ?? "").slice(0, 7)} ${c.subject}` +
+    `${c.files?.length ? ` (${c.files.slice(0, 8).map((f) => f.path).join(", ")}${c.files.length > 8 ? ", …" : ""})` : ""}`);
+  return [
+    `Before your changes to ${row.name} (${row.id}) land: since your copy was made, ${news.length} change${news.length === 1 ? "" : "s"} went into the plugin the app runs (newest first):`,
+    ...shown,
+    news.length > 15 ? `- … and ${news.length - 15} more` : null,
+    `Check whether they contradict or break your changes: renamed or removed functions, ids, settings or tools your ` +
+      `changes use; the same thing done another way; files you both changed. See each with ` +
+      `mcp__layr__layr__plugin_diff {plugin: "${row.id}", commit}; the plugin as the app runs it now is in its folder ` +
+      `(layr__plugin_history / plugins_list). Your copy doesn't have them yet: they are merged in when it lands. If ` +
+      `something must change for both to work together, change your copy now. Don't land anything yourself.`,
+    `Then say in a line or two what you checked, and end with Status: done if it can land; if it can't, ask the person.`,
+  ].filter(Boolean).join("\n");
+}
+
+/** 0.15.5: what the thread is asked when the plugin's self-test fails in its copy. */
+export function checkPrompt(row, check, output) {
+  return `The self-test of ${row.name} (${row.id}, \`${check}\` in your copy) fails, so your changes didn't land:\n\n` +
+    `\`\`\`\n${tail(output, 2500)}\n\`\`\`\n\nFix it in your copy (or the test, if the test is what is out of date). ` +
+    `End with Status: done once it passes.`;
+}
+
+/**
+ * 0.15.5: a plugin's self-test (layr.json `check`: a .mjs/.js file run with node, else a command) in `folder`:
+ * {ran, ok, code, output}. Installs nothing; stopped after `timeoutMs`.
+ */
+export function runSelfTest(folder, check, { timeoutMs = 5 * 60_000 } = {}) {
+  return new Promise((resolve) => {
+    const file = /\.(m|c)?js$/i.test(check.trim());
+    if (file && !existsSync(path.join(folder, check.trim()))) return resolve({ ran: false, ok: true, code: null, output: "" });
+    let output = "";
+    let child;
+    try {
+      child = file
+        ? spawn(process.execPath, [check.trim()], { cwd: folder, windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } })
+        : spawn(check, { cwd: folder, shell: true, windowsHide: true });
+    } catch (error) {
+      return resolve({ ran: true, ok: false, code: null, output: errorMessage(error) });
+    }
+    const add = (d) => {
+      output = (output + d.toString()).slice(-20_000);
+    };
+    child.stdout?.on("data", add);
+    child.stderr?.on("data", add);
+    const timer = setTimeout(() => {
+      output += `\n(stopped after ${Math.round(timeoutMs / 1000)} s)`;
+      child.kill();
+    }, timeoutMs);
+    child.on("error", (error) => add(`\n${errorMessage(error)}`));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ ran: true, ok: code === 0, code, output: tail(output) });
+    });
+  });
+}
+
 /** A row as threads and panels see it. */
 export function publicRow(r) {
   return {
     // 0.12.0: the thread's own copy of the plugin (a plugin worktree): the app runs the plugin as it was until it lands.
     copy: r.copy ? { name: r.copy.name, branch: r.copy.branch ?? null, base: r.copy.base ?? null,
-      trying: Boolean(r.copy.trying) } : null,
+      trying: Boolean(r.copy.trying),
+      // 0.15.5: it lands after its thread's turn (why: review / check), and since when.
+      landAfter: r.copy.landAfter ? { why: r.copy.landAfter.why, at: r.copy.landAfter.at ?? null, auto: Boolean(r.copy.landAfter.auto) } : null } : null,
     // 0.15.4: when this thread last landed the plugin, and at which version (the panel says "✓ Landed").
     landed: r.landed ? { at: r.landed.at ?? null, version: r.landed.version ?? null, commit: r.landed.commit ?? null } : null,
     id: r.id, name: r.name, mode: r.mode, version: r.version ?? null, source: r.source ?? null, place: r.place ?? null,
@@ -433,7 +505,8 @@ export class ThreadPlugins {
       const r = await this.hub.call("layr__plugin_worktree", { plugin: t.id, name: copy });
       folder = r?.path ?? folder;
       place = place === "store" ? "changed" : place;
-      copyRow = { name: copy, branch: r?.branch ?? null, base: r?.base ?? null, trying: false };
+      // 0.15.5: `since`: when the copy was made (what went into the plugin after it is checked before landing).
+      copyRow = { name: copy, branch: r?.branch ?? null, base: r?.base ?? null, trying: false, since: nowIso() };
       this.catalogCache = null;
     } else if (mode === "change" && (place === "store" || other ||
       (place === "changed" && path.basename(String(folder ?? "")).toLowerCase() !== "mine"))) {
@@ -648,11 +721,19 @@ export class ThreadPlugins {
   /**
    * Land: each copy's changes go into the plugin the app runs (`layr__plugin_worktree_land`). A clash leaves the copy
    * with conflicts to resolve (said to Claude). Gives [{plugin, landed, commit?, conflicts?, prompt?, extension}].
+   * 0.15.5, before it lands (settings, both on by default):
+   * - landReview: what went into the plugin since the copy was made goes to the thread first, to check it fits with
+   *   its changes ({review: true}); it lands after that turn (`afterTurn`: by itself once it ends with Status: done).
+   * - landCheck: the plugin's self-test (layr.json `check`) runs in the copy ({checkFailed: true}: the thread fixes it,
+   *   as above), and again on the landed plugin (`afterCheck`: {ok: false, output} when the merged plugin fails it).
    */
-  async land(meta, plugin, { reopen = true } = {}) {
+  async land(meta, plugin, { reopen = true, afterTurn = true } = {}) {
     const results = [];
     const next = new Map();
     const notes = [];
+    const asks = [];
+    const review = await this.setting("landReview", true);
+    const check = await this.setting("landCheck", true);
     // A held copy (it needs a core the app doesn't have yet) stays out of a landing of every copy.
     for (const row of this.copies(meta, plugin).filter((r) => plugin || !r.held)) {
       // 0.15.4: a copy with nothing new (landed already, or never changed) doesn't land again.
@@ -661,22 +742,119 @@ export class ThreadPlugins {
         results.push({ plugin: row.id, nothing: true });
         continue;
       }
-      const version = readManifest(row.folder)?.version ?? null;
+      const manifest = readManifest(row.folder);
+      const version = manifest?.version ?? null;
+      const rounds = row.copy.landAfter?.rounds ?? 0;
+      if (review) {
+        const news = await this.meanwhile(meta, row).catch((e) => (log(`history of ${row.id}:`, errorMessage(e)), []));
+        if (news.length) {
+          if (rounds >= LAND_ROUNDS) {
+            results.push({ plugin: row.id, landed: false, stuck: true, why: `still not landed after ${LAND_ROUNDS} rounds` });
+            continue;
+          }
+          asks.push({ row, kind: "review", text: reviewPrompt(row, news), rounds });
+          results.push({ plugin: row.id, landed: false, review: true, commits: news.length,
+            changes: news.slice(0, 8).map((c) => c.subject) });
+          continue;
+        }
+      }
+      if (check && manifest?.check) {
+        const t = await runSelfTest(row.folder, manifest.check);
+        if (t.ran && !t.ok) {
+          if (rounds >= LAND_ROUNDS) {
+            results.push({ plugin: row.id, landed: false, stuck: true, checkFailed: true, output: t.output });
+            continue;
+          }
+          asks.push({ row, kind: "check", text: checkPrompt(row, manifest.check, t.output), rounds });
+          results.push({ plugin: row.id, landed: false, checkFailed: true, output: t.output });
+          continue;
+        }
+      }
       const r = await this.hub.call("layr__plugin_worktree_land", { plugin: row.id, name: row.copy.name });
       if (r?.landed) {
         const after = { ...(await this.after(meta, row, reopen)), landed: { at: nowIso(), version, commit: r.commit ?? null } };
         next.set(row.id, after);
         notes.push(`The person landed your changes to ${row.name} (${row.id}): the app runs them now.` +
           (after.copy ? ` Your new copy is ${after.folder}.` : ` Its folder is ${after.folder} now.`));
-        results.push({ plugin: row.id, landed: true, commit: r.commit ?? null, changes: r.changes ?? 0, version,
-          extension: Boolean(row.extension) });
+        const out = { plugin: row.id, landed: true, commit: r.commit ?? null, changes: r.changes ?? 0, version,
+          extension: Boolean(row.extension) };
+        // The plugin as it landed (with what went in meanwhile merged): its self-test once more.
+        if (check && manifest?.check) {
+          const c = await this.hub.call("layr__plugin_check", { plugin: row.id }).catch(() => null);
+          if (c?.ran && !c.ok) {
+            out.afterCheck = { ok: false, output: tail(c.output) };
+            notes.push(`The self-test of ${row.name} fails on the plugin as it landed (with the changes that went in ` +
+              `meanwhile merged in): ${tail(c.output, 1500)}\nFix it in ${after.copy ? "your new copy" : "its folder"}.`);
+          }
+        }
+        results.push(out);
       } else {
         notes.push(r?.prompt ?? `Your changes to ${row.name} clash with the plugin as it is now: resolve ${(r?.conflicts ?? []).join(", ")}.`);
         results.push({ plugin: row.id, landed: false, conflicts: r?.conflicts ?? [], prompt: r?.prompt ?? null });
+        // The clash merged what went in meanwhile into the copy: resolving it is the review.
+        next.set(row.id, { ...row, copy: { ...row.copy, reviewedAt: nowIso(), landAfter: undefined } });
+      }
+    }
+    // What the thread checks or fixes before it lands: one message; it lands again after that turn.
+    if (asks.length) {
+      const at = nowIso();
+      for (const a of asks) {
+        next.set(a.row.id, { ...a.row, copy: { ...a.row.copy, ...(a.kind === "review" ? { reviewedAt: at } : {}),
+          landAfter: { why: a.kind, at, rounds: a.rounds + 1, auto: Boolean(afterTurn), reopen } } });
       }
     }
     this.swap(meta, next, notes);
+    if (asks.length) {
+      const text = `${asks.map((a) => a.text).join("\n\n")}\n\n${afterTurn
+        ? "When you end your turn with Status: done, layr lands your copy by itself."
+        : "When your turn ends, the pipeline lands your copy (Status: done), or waits for the person."}`;
+      await this.engine.send(meta.id, { text });
+    }
     return results;
+  }
+
+  /** One of Threads' settings (layr.json), its default when the core doesn't say. */
+  async setting(id, fallback) {
+    try {
+      const v = await this.hub.settingsGet?.(id);
+      return v === undefined || v === null ? fallback : v;
+    } catch {
+      return fallback;
+    }
+  }
+
+  /**
+   * 0.15.5: what went into the plugin the app runs since this copy was made (or since its thread last checked it):
+   * the plugin's history, newest first. Its own thread's commits don't count.
+   */
+  async meanwhile(meta, row) {
+    const since = Date.parse(row.copy.reviewedAt ?? row.copy.since ?? row.at ?? "");
+    if (!Number.isFinite(since)) return [];
+    const list = (await this.hub.call("layr__plugin_history", { plugin: row.id, limit: 40 }))?.commits ?? [];
+    return list.filter((c) => commitMs(c.time) > since && c.thread !== meta.id);
+  }
+
+  /**
+   * 0.15.5: after a turn that checked what went in meanwhile (or fixed the self-test): it lands by itself when the turn
+   * ended with Status: done (`landAfter.auto`); else the person decides. Gives the results, or null.
+   */
+  async afterLandTurn(meta, reply) {
+    const rows = (meta.plugins ?? []).filter((r) => r.copy?.landAfter);
+    if (!rows.length) return null;
+    const auto = rows.filter((r) => r.copy.landAfter.auto);
+    const status = /Status:\s*(\w+)/i.exec(String(reply ?? "").split("\n").reverse().find((l) => /Status:/i.test(l)) ?? "")?.[1]?.toLowerCase();
+    if (!auto.length) return null;
+    if (status !== "done") {
+      // It asks something: the landing waits for the person (Land again).
+      const next = new Map(auto.map((r) => [r.id, { ...r, copy: { ...r.copy, landAfter: undefined } }]));
+      this.swap(meta, next, []);
+      return { waits: auto.map((r) => r.id), status: status ?? null };
+    }
+    const results = [];
+    for (const r of auto) {
+      results.push(...(await this.land(this.engine.requireThread(meta.id), r.id, { reopen: r.copy.landAfter.reopen !== false })));
+    }
+    return { results };
   }
 
   /**

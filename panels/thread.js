@@ -2204,7 +2204,14 @@ Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.
   // 0.15.4: Land only for copies with something new; "Landing…" while it runs; "✓ Landed" (version, when) after.
   const copies = t.plugins.filter((p) => p.copy);
   void readCopyStatus(t, copies);
-  const toLand = copies.filter((p) => !copyIsEmpty(p));
+  const toLand = copies.filter((p) => !copyIsEmpty(p) && !p.copy.landAfter?.auto);
+  // 0.15.5: a landing that waits for the thread's turn: it checks what changed meanwhile (or fixes the self-test) first.
+  const waiting = copies.filter((p) => p.copy.landAfter);
+  const waitNote = waiting.length ? h("span", { class: "landed-note waiting", title: waiting.map((p) =>
+    `${p.name}: ${p.copy.landAfter.why === "check" ? "its self-test failed in this copy; Claude fixes it" : "other changes went in since this copy was made; Claude checks they fit"}` +
+    `${p.copy.landAfter.auto ? ", then it lands by itself (Status: done)" : ", then the pipeline lands it"}`).join("\n") },
+  h("span", { class: "spinner" }), waiting.some((p) => p.copy.landAfter.why === "review")
+    ? "Checking what changed meanwhile, then it lands" : "Fixing the self-test, then it lands") : null;
   let land = null;
   if (landingNow.size) {
     land = h("button", { class: "btn primary small landing", disabled: true, title: "Putting this thread's changes into the app" },
@@ -2226,6 +2233,7 @@ Own copy: the app runs ${p.name} as it was until you land these changes${p.copy.
     t.plugins.length ? null : h("span", { class: "muted" }, "none yet: mention one with @, or Claude asks"),
     add,
     landedNote,
+    waitNote,
     land,
     t.allowAllPlugins ? h("span", { class: "badge", title: "Claude may change any plugin it asks for in this thread" },
       "all allowed") : null,
@@ -2287,11 +2295,21 @@ async function copyAction(action, p) {
       notify(action === "try" ? `The app runs your copy of ${p.name} now` : `The app runs ${p.name} as it was again`, "success");
       return;
     }
-    const clashes = results.filter((x) => x.landed === false);
+    const clashes = results.filter((x) => x.landed === false && x.conflicts?.length);
     const done = results.filter((x) => x.landed || x.dropped).map((x) => `${x.plugin}${x.version ? ` ${x.version}` : ""}`);
     const nothing = results.filter((x) => x.nothing).map((x) => x.plugin);
     if (done.length) notify(`${action === "land" ? "Landed: the app runs" : "Dropped"} ${done.join(", ")}${action === "land" ? " now" : ""}`, "success");
     if (nothing.length) notify(`Nothing new to land in ${nothing.join(", ")}: it is in the app already`, "info");
+    // 0.15.5: it lands after the thread's turn: what changed meanwhile is checked first, or the self-test is fixed.
+    const reviews = results.filter((x) => x.review);
+    if (reviews.length) notify(`${reviews.map((x) => `${x.plugin}: ${x.commits} change${x.commits === 1 ? "" : "s"}`).join(", ")} went in since this copy was made. ` +
+      "Claude checks they fit with this thread's changes, then it lands by itself.", "info");
+    const failed = results.filter((x) => x.checkFailed && !x.stuck);
+    if (failed.length) notify(`The self-test of ${failed.map((x) => x.plugin).join(", ")} fails in this copy: Claude fixes it, then it lands.`, "warning");
+    const stuck = results.filter((x) => x.stuck);
+    if (stuck.length) notify(`Not landed: ${stuck.map((x) => x.plugin).join(", ")} (${stuck[0].why ?? "its self-test still fails"}).`, "error");
+    const broke = results.filter((x) => x.afterCheck);
+    if (broke.length) notify(`Landed, but the self-test of ${broke.map((x) => x.plugin).join(", ")} fails on the landed plugin: Claude is told.`, "warning");
     if (clashes.length && (await confirmIn(holder, `${clashes.map((x) => x.plugin).join(", ")} changed meanwhile and clashes with ` +
       `this thread's changes (${clashes.flatMap((x) => x.conflicts).join(", ")}). Let Claude resolve it, then land again?`,
     { ok: "Let Claude resolve it" }))) {

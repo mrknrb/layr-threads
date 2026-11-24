@@ -505,3 +505,5 @@ details.tool > summary .sub-model { flex: none; height: 18px; font-size: 11px; }
 #plugins .btn.landing .spinner { width: 11px; height: 11px; }
 #plugins .landed-note { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--ok, var(--success, var(--accent)));
   border: 1px solid color-mix(in srgb, var(--ok, var(--accent)) 45%, var(--border)); border-radius: 999px; padding: 1px 8px; }
+#plugins .landed-note.waiting { color: var(--fg-dim); border-color: var(--border); }
+#plugins .landed-note .spinner { width: 10px; height: 10px; }
