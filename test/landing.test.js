@@ -148,6 +148,28 @@ await test("after three rounds it stops instead of asking again", async () => {
   assert.equal(r[0].stuck, true);
 });
 
+// 0.15.6: what the review of task #186 showed.
+await test("this copy's own earlier landing doesn't count as changed meanwhile", async () => {
+  const s = setup({ history: [{ ...newer("Land w_1"), thread: null }] });
+  const r = await s.plugins.land(s.meta(), null, { reopen: false });
+  assert.equal(r[0].landed, true);
+  assert.equal(s.sent.length, 0, "no review of its own landing");
+});
+
+await test("a copy that is gone (it landed while Threads restarted): landed already, nothing asked", async () => {
+  const s = setup({ history: [{ ...newer("Land w_1"), thread: null, sha: "f00d" }, newer("Other change")] });
+  const call = s.plugins.hub.call.bind(s.plugins.hub);
+  s.plugins.hub.call = async (tool, args) => (tool === "layr__plugin_worktrees" ? { worktrees: [] } : call(tool, args));
+  const r = await s.plugins.land(s.meta(), null, { reopen: false });
+  assert.equal(r[0].landed, true);
+  assert.equal(r[0].already, true);
+  assert.equal(r[0].commit, "f00d");
+  assert.equal(s.landed(), false, "nothing landed again");
+  assert.equal(s.sent.length, 0, "no review");
+  assert.equal(s.meta().plugins[0].copy, null, "the row follows: no copy");
+  assert.equal(s.meta().plugins[0].landed.commit, "f00d");
+});
+
 await test("the prompts and the self-test runner", async () => {
   const p = reviewPrompt({ id: "notes", name: "Notes" }, [newer("A"), newer("B")]);
   assert.match(p, /2 changes went in/);

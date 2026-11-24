@@ -2,7 +2,7 @@
   "repository": "https://github.com/mrknrb/layr-threads",
   "id": "threads",
   "name": "Threads",
-  "version": "0.15.5",
+  "version": "0.15.6",
   "description": "Chat and agent threads in your projects and worktrees, and on your layr plugins and Chrome extensions (a list per thread of the plugins it may read and change), with approvals and live streaming. Runs Claude Code; more harnesses later.",
   "author": "mrknrb",
   "layr": "^0.1",
