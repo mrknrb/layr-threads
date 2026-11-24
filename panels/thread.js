@@ -2332,7 +2332,7 @@ async function copyAction(action, p) {
 /** A copy with nothing new to land (known from its status; unknown: it may have something). */
 function copyIsEmpty(p) {
   const st = copyStatus.byPlugin.get(p.id);
-  return Boolean(st?.known && !st.ahead && !st.dirty && !st.conflicts?.length);
+  return Boolean(st?.gone || (st?.known && !st.ahead && !st.dirty && !st.conflicts?.length));
 }
 
 async function readCopyStatus(t, copies) {

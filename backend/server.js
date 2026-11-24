@@ -91,7 +91,8 @@ engine.onTurnEnded = (meta, status) => {
 /** 0.15.5: what a land / drop did, said in the thread (and extensions that landed reloaded). */
 async function saidLanding(meta, action, results) {
   const said = results.map((r) => {
-    if (r.nothing) return `${r.plugin}: nothing new to land`;
+    if (r.nothing) return `${r.plugin}: nothing new to land${r.gone ? " (its copy is gone)" : ""}`;
+    if (r.already) return `${r.plugin}: landed already`;
     if (r.stuck) return `${r.plugin}: not landed (${r.why ?? "its self-test still fails"}): land it yourself when it is right`;
     if (r.review) return `${r.plugin}: ${r.commits} change${r.commits === 1 ? "" : "s"} went in since this copy was made: Claude checks they fit with this thread's changes, then it lands`;
     if (r.checkFailed) return `${r.plugin}: its self-test fails in this copy: Claude fixes it, then it lands`;

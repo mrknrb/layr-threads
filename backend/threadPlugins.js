@@ -742,6 +742,19 @@ export class ThreadPlugins {
         results.push({ plugin: row.id, nothing: true });
         continue;
       }
+      if (st?.gone) {
+        // 0.15.6: its copy is gone: it landed (its "Land <copy>" commit is there) and the list says so now, or
+        // it was dropped. Either way nothing is left to land; the row follows.
+        const mine = await this.landCommit(row).catch(() => null);
+        const after = { ...(await this.after(meta, row, reopen)),
+          ...(mine ? { landed: { at: new Date(commitMs(mine.time)).toISOString(), version: null, commit: mine.sha } } : {}) };
+        next.set(row.id, after);
+        notes.push(`Your copy of ${row.name} isn't there any more${mine ? ": it landed already (the app runs it)" : ""}.` +
+          (after.copy ? ` Your new copy is ${after.folder}.` : ` Its folder is ${after.folder} now.`));
+        results.push(mine ? { plugin: row.id, landed: true, already: true, commit: mine.sha, extension: Boolean(row.extension) }
+          : { plugin: row.id, nothing: true, gone: true });
+        continue;
+      }
       const manifest = readManifest(row.folder);
       const version = manifest?.version ?? null;
       const rounds = row.copy.landAfter?.rounds ?? 0;
@@ -831,7 +844,14 @@ export class ThreadPlugins {
     const since = Date.parse(row.copy.reviewedAt ?? row.copy.since ?? row.at ?? "");
     if (!Number.isFinite(since)) return [];
     const list = (await this.hub.call("layr__plugin_history", { plugin: row.id, limit: 40 }))?.commits ?? [];
-    return list.filter((c) => commitMs(c.time) > since && c.thread !== meta.id);
+    // Not its own: its thread's commits, nor the landing of this copy itself (an earlier Land of it that went in).
+    return list.filter((c) => commitMs(c.time) > since && c.thread !== meta.id && c.subject !== `Land ${row.copy.name}`);
+  }
+
+  /** 0.15.6: the commit that landed this copy ("Land <copy>"), newest first, or null. */
+  async landCommit(row) {
+    const list = (await this.hub.call("layr__plugin_history", { plugin: row.id, limit: 40 }))?.commits ?? [];
+    return list.find((c) => c.subject === `Land ${row.copy.name}`) ?? null;
   }
 
   /**
@@ -871,8 +891,10 @@ export class ThreadPlugins {
         byPlugin.set(row.id, list);
       }
       const w = list?.find((x) => x.name === row.copy.name);
+      // 0.15.6: `gone`: the core lists the plugin's copies and this one isn't there (it landed or was dropped while
+      // this backend restarted: landing Threads itself restarts it before the thread's list is updated).
       out.push(w ? { plugin: row.id, known: true, ahead: w.ahead ?? 0, dirty: w.dirty ?? 0, conflicts: w.conflicts ?? [] }
-        : { plugin: row.id, known: false, ahead: null, dirty: null, conflicts: [] });
+        : { plugin: row.id, known: false, gone: Array.isArray(list), ahead: null, dirty: null, conflicts: [] });
     }
     return out;
   }
