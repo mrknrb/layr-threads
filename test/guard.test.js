@@ -74,6 +74,30 @@ for (const mode of ["all", "listed", "off"]) {
   check(blocked(`Get-Process -Id ${APP} | Stop-Process`, { mode }), `${mode}: the app's id is refused (Get-Process)`);
 }
 
+// bash and zsh on macOS and Linux: the app is `layr`, the engine `node`.
+const unixByName = [
+  "ps aux | grep layr | awk '{print $2}' | xargs kill",
+  "kill -9 $(ps -e | grep '[l]ayr' | awk '{print $1}')",
+  "sudo pkill -x layr",
+  "killall layr",
+  "pkill -9 -f 'node backend/server.js'",
+];
+for (const cmd of unixByName) check(blocked(cmd), `refused: ${cmd}`);
+check(killTargets("ps aux | grep layr | xargs kill").names.includes("layr"), "ps | grep: the program grep picks");
+for (const mode of ["all", "listed", "off"]) {
+  check(blocked(`sudo kill ${APP}`, { mode }), `${mode}: the app's id is refused (sudo kill)`);
+  check(blocked(`kill -s TERM ${APP}`, { mode }), `${mode}: the app's id is refused (kill -s TERM)`);
+  check(blocked(`/bin/kill -KILL ${APP}`, { mode }), `${mode}: the app's id is refused (/bin/kill)`);
+  check(blocked(`kill -- -${ENGINE}`, { mode }), `${mode}: the engine's process group is refused`);
+  for (const cmd of ["kill 0", "kill -9 -1", "kill -- -1", "kill -TERM 0", "sleep 1; kill -9 0"]) {
+    check(blocked(cmd, { mode }), `${mode}: ${cmd} (a whole group, or every process) is refused`);
+  }
+}
+const unixFine = ["kill -l", "kill %1", "kill -9 -4242", "kill -s TERM 4242", "ps aux | grep layr", "kill $pid",
+  "node server.js & pid=$!; sleep 2; kill $pid", 'git commit -m "kill 0 is refused now"'];
+for (const cmd of unixFine) check(!blocked(cmd), `allowed: ${cmd}`, refusal(cmd, { protectedPids: pids }));
+check(/kill \$pid/.test(refusal("kill 0", { protectedPids: pids })), "the refusal says how in bash too");
+
 // Settings: "listed" refuses only the programs listed, "off" none by name.
 const listed = { mode: "listed", protectedNames: parseProgramList("layr.exe, node.exe, claude.exe") };
 check(blocked("taskkill /F /IM layr.exe", listed), "listed: layr.exe refused");

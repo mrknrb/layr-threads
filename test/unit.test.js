@@ -9,7 +9,7 @@ import test from "node:test";
 import { Account } from "../backend/account.js";
 import { contextFill, contextWindowFor, Engine, reportedWindow } from "../backend/engine.js";
 import { baseRef, parseNumstat, threadChanges, fileDiff } from "../backend/changes.js";
-import { checkFresh, scriptFor, shellOf, terminalEnv } from "../backend/terminal.js";
+import { checkFresh, linuxTerminal, scriptFor, shellOf, terminalEnv } from "../backend/terminal.js";
 import {
   AGREE_TEXT,
   NONE,
@@ -166,8 +166,24 @@ test("terminal: shells, scripts, fresh clicks, clean environment", () => {
   const ps = scriptFor("powershell", "echo 'hi'\nnpm test");
   assert.match(ps, /Write-Host '> echo ''hi''' -ForegroundColor Cyan/);
   assert.match(ps, /\r\nnpm test\r\n/);
-  assert.match(scriptFor("bash", "ls"), /exec bash --login -i/);
+  assert.match(scriptFor("bash", "ls", { platform: "win32" }), /exec bash --login -i/);
   assert.match(scriptFor("cmd", "dir"), /^@chcp 65001/);
+  // macOS and Linux: into the folder first (Terminal.app opens in the home folder), the user's shell at the end.
+  const sh = scriptFor("bash", "echo 'hi'", { platform: "darwin", cwd: "/Users/me/it's here" });
+  assert.match(sh, /^#!\/bin\/bash\ncd -- '\/Users\/me\/it'\\''s here' \|\| exit 1\n/);
+  assert.match(sh, /\necho 'hi'\n/);
+  assert.match(sh, /exec "\$\{SHELL:-\/bin\/bash\}" -l -i\n$/);
+  assert.doesNotMatch(sh, /\r/);
+  const pwsh = scriptFor("powershell", "Get-Date", { platform: "linux", cwd: "/home/me/o'k" });
+  assert.match(pwsh, /Set-Location -LiteralPath '\/home\/me\/o''k'\n/);
+  assert.doesNotMatch(pwsh, /\r/);
+  // Linux: TERMINAL first, then Debian's x-terminal-emulator, then the common ones; null without any.
+  const have = (names) => (name) => (names.includes(name) ? `/usr/bin/${name}` : null);
+  assert.deepEqual(linuxTerminal(have(["xterm", "gnome-terminal"]), {}), ["/usr/bin/gnome-terminal", "--"]);
+  assert.deepEqual(linuxTerminal(have(["xterm", "kitty"]), { TERMINAL: "kitty" }), ["/usr/bin/kitty"]);
+  assert.deepEqual(linuxTerminal(have(["xterm", "x-terminal-emulator"]), {}), ["/usr/bin/x-terminal-emulator", "-e"]);
+  assert.deepEqual(linuxTerminal(have(["myterm"]), { TERMINAL: "myterm" }), ["/usr/bin/myterm", "-e"]);
+  assert.equal(linuxTerminal(have([]), {}), null);
   assert.throws(() => checkFresh(Date.now() - 61_000), /more than a minute old/);
   assert.doesNotThrow(() => checkFresh(Date.now() - 5_000));
   assert.throws(() => checkFresh(undefined));
