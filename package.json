@@ -1,6 +1,6 @@
 {
   "name": "layr-plugin-threads",
-  "version": "0.12.1",
+  "version": "0.15.3",
   "private": true,
   "type": "module",
   "description": "layr's threads: chat and agent threads, worktrees, approvals; Claude Code through the Agent SDK.",
